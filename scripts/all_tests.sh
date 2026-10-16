@@ -8,7 +8,7 @@ export ROC_CACHE_DIR="${ROC_CACHE_DIR:-$PWD/.cache/roc}"
 mkdir -p "$ROC_CACHE_DIR"
 
 "$ROC" version
-"$ROC" fmt --check src tests examples
+"$ROC" fmt --check src tests examples fuzz
 "$ROC" check src/main.roc
 # The expects in src/Cbor.roc.
 "$ROC" test src/main.roc

@@ -82,7 +82,7 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | Argument width | Any (1, 2, 4 or 8 bytes), also longer than needed | Shortest, for integers and for text and byte string lengths |
 | Container head | 1, 2, 4 or 8 bytes | 1 byte for 23 items or less, else 3 bytes (65,535 or less), else 5 bytes. So an array of 24 items has a 3 byte head. |
 | Integer | Major types 0 and 1, up to 64 bits. A float with no fraction is also read as an integer, so JS can send 2^53 and more as a float. | Major types 0 and 1 |
-| Float | f16, f32, f64. An integer is also read as a float. | `F64` as f64 (9 bytes, never shortened). `F32` as f32 (5 bytes). |
+| Float | f16, f32, f64. An integer is also read as a float. An `F32` reads a finite value outside the F32 range as an error (not as an infinity). | `F64` as f64 (9 bytes, never shortened). `F32` as f32 (5 bytes). |
 | `null`, `undefined` | Both read as `Err(Null)` of a `Try(a, [Null])` | `null` |
 | Tag (major type 6) | An error, as a value. It is skipped in the value of an unknown record field. | Not written |
 | Simple values other than `false`, `true`, `null`, `undefined` | An error | Not written |
@@ -103,18 +103,34 @@ Not supported. The compiler gives "missing method" when the code uses them:
 | `Dict` with a key that is not `Str` | `parse_key_u64` and the like |
 | Any `Dict` as a value to write | `encode_dict` |
 
+Known limits:
+
+| Limit | Reason |
+| --- | --- |
+| There is no camelCase writer. `Cbor.encode` writes the Roc field names (`user_id`). Only the reader has a camelCase form (`Cbor.parse_camel`). | The encode methods of the codec protocol (`encode_record` and the like) do not get the encoding value, so they cannot rename a field. |
+| A recursive type of your own (a tree) can overflow the stack on very deep input. | The derived parser of a recursive type calls itself once for each level of nesting. The package has no depth limit. An unknown record field is not affected: the package skips it with a loop. |
+
 ## Tests
 
 `scripts/all_tests.sh` runs these steps with the compiler in `ROC` (default: `roc` from the path). The roc cache is in `.cache/roc`.
 
 | Step | Command |
 | --- | --- |
-| Format | `roc fmt --check src tests examples` |
+| Format | `roc fmt --check src tests examples fuzz` |
 | Check | `roc check src/main.roc` |
-| Expects of the module (45) | `roc test src/main.roc` |
+| Expects of the module (48) | `roc test src/main.roc` |
 | RFC 8949 Appendix A (169 expects) | `roc test tests/rfc8949.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
+
+`scripts/fuzz.sh [runs]` runs the property tests (L1) with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.4.3.
+It builds each target in `fuzz/` and runs a fixed count of inputs (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`).
+roc-fuzz runs on Linux x86-64 and macOS arm64 only. A failure is saved in `.cache/fuzz/art-<target>/`.
+
+| Target | Property |
+| --- | --- |
+| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse` and `Cbor.parse_camel`. Target types: a record with nested lists and `Try` fields, `List(U64)`, `Str`, `Try(U64, [Null])`, `Cbor.Bytes`, `List(U8)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
+| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)` for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, lists, tuples, tags, `Try(_, [Null])`) |
 
 `scripts/bundle.sh` makes `dist/<hash>.tar.zst` and prints its release URL.
 `scripts/test_bundle.sh` runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep`.
@@ -141,7 +157,7 @@ A vector outside the profile is an `expect` that the parse is `Err(InvalidCbor(p
 
 | Workflow | When | Does |
 | --- | --- | --- |
-| `.github/workflows/tests.yaml` | Push to `main`, pull request, by hand | Makes the bundle once on Linux. Runs `scripts/all_tests.sh` and `scripts/test_bundle.sh` on Linux x64, Linux arm64 and macOS arm64. |
+| `.github/workflows/tests.yaml` | Push to `main`, pull request, by hand | Makes the bundle once on Linux. Runs `scripts/all_tests.sh` and `scripts/test_bundle.sh` on Linux x64, Linux arm64 and macOS arm64. Runs `scripts/fuzz.sh` on Linux x64. |
 | `.github/workflows/release.yml` | Push of a tag `X.Y.Z` or `X.Y.Z-pre` | Runs the tests, makes the bundle and the docs, and publishes the GitHub Release with `<hash>.tar.zst` and `package-docs.tar.gz`. Then runs the examples against the published URL. |
 
 `.github/actions/setup-roc` downloads the nightly of `.roc-version` from `roc-lang/nightlies` with `gh release download`.
@@ -153,6 +169,7 @@ A tag has no `v`: roc reads the version from the URL, and the tag is a segment o
 | --- | --- | --- |
 | [roc-lang/roc#12309](https://github.com/roc-lang/roc/issues/12309) | A nominal or opaque type over a builtin (`Secret :: Str`) has no opt in, but the encoder still writes its value when it is in a record, a tuple or a tag. So `Cbor.encode` can write hidden data. | Back the type with a record: `Secret :: { text : Str }` |
 | [roc-lang/roc#12310](https://github.com/roc-lang/roc/issues/12310) | A function with no annotation gives a value that `Json` parsed. Another function takes that value with a `Cbor.Parseable` constraint. The compiler gives "type mismatch" and "type not determined". | Annotate the first function with the full result type |
+| No issue (seen on `nightly-2026-10-12-2664a27`, not on `nightly-2026-10-14-38a3029`) | Some programs that parse into a record with an optional field (`extra ?: Bool`) crash the compiler (SIGSEGV), with `Json.parse` too. A first build of the fuzz target had this crash. | Use a `Try(a, [Missing])` field, or a later nightly |
 
 Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repository. Both issues reproduce on `nightly-2026-10-14-38a3029`.
 
@@ -164,7 +181,9 @@ Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repositor
 | `src/Cbor.roc` | The format, its `expect`s and the doc comments |
 | `tests/rfc8949.roc` | The RFC 8949 Appendix A vectors |
 | `examples/round_trip.roc` | An app that uses each public item. It runs on the echo host of roc, with no platform. |
-| `scripts/` | `all_tests.sh`, `bundle.sh`, `test_bundle.sh` |
+| `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
+| `scripts/` | `all_tests.sh`, `fuzz.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |
 
 The bundle has the files of `src/` that `main.roc` imports: `main.roc` and `Cbor.roc`.
+Each of the two files starts with the copyright line and a reference to the UPL, because the bundle has no `LICENSE` file.

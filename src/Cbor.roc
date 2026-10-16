@@ -1,3 +1,6 @@
+# Copyright © 2026 Heorhii Bulakh and subsequent roc-cbor authors <github.com/Karakatiza666/roc-cbor/graphs/contributors>
+# Licensed under the Universal Permissive License (UPL), Version 1.0. See LICENSE.
+
 ## CBOR (RFC 8949) as a format of the Roc codec protocol. The derived `parser_for` and
 ## `encoder_for` of a type read and write it, as they do for `Json`.
 ##
@@ -219,7 +222,12 @@ Cbor :: [Default, CamelCase].{
 	parse_f32 : Cbor, Cbor.State -> Try({ value : F32, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_f32 = |_, state| {
 		f = float(state)?
-		Ok({ value: f.value.to_f32_wrap(), rest: f.rest })
+		# A finite value outside the F32 range is an error, not an infinity.
+		if f.value.is_finite() and f.value.abs() > F32.highest.to_f64() {
+			Err(InvalidCbor(state.pos))
+		} else {
+			Ok({ value: f.value.to_f32_wrap(), rest: f.rest })
+		}
 	}
 
 	# Containers
@@ -917,4 +925,27 @@ expect {
 	r : Try({ n : U64 }, _)
 	r = Cbor.parse([0xa1, 0x61, 0x78, 0x82, 0x81, 0x00])
 	r == Err(InvalidCbor(4))
+}
+
+## An F32 reads an f64 that is outside the F32 range as an error, not as an infinity.
+expect {
+	r : Try(F32, _)
+	r = Cbor.parse(Cbor.encode(1.0e300.F64))
+	r == Err(InvalidCbor(0))
+}
+
+## The largest F32, an infinity and NaN still read as an F32.
+expect {
+	r : Try(List(F32), _)
+	r = Cbor.parse(Cbor.encode([F32.highest.to_f64(), -(F32.highest.to_f64()), F64.infinity]))
+	r == Ok([F32.highest, -F32.highest, F32.infinity])
+}
+
+expect {
+	r : Try(F32, _)
+	r = Cbor.parse(Cbor.encode(F64.nan))
+	match r {
+		Ok(f) => f.is_nan()
+		Err(_) => Bool.False
+	}
 }
