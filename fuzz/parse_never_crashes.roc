@@ -6,7 +6,8 @@ app [target] {
 import fuzz.Fuzz
 import pkg.Cbor
 
-# L1 target: Cbor.parse and Cbor.parse_camel never crash, for any bytes and several target types.
+# L1 target: Cbor.parse, Cbor.parse_camel, Cbor.parse_with and Cbor.path_at never crash, for any
+# bytes and several target types.
 # The record has no optional field (`?:`): nightly-2026-10-12 crashes when it builds a parse into one.
 
 Row : { id : U64, name : Str, tags : List(Str), cells : List(List(I64)), note : Try(Str, [Null]), extra : Try(Bool, [Missing]) }
@@ -39,8 +40,27 @@ test! = |bytes| {
 	small = Cbor.parse(bytes)
 	dict : Try(Dict(Str, U64), _)
 	dict = Cbor.parse(bytes)
-	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(raw, len) and in_input(small, len) and in_input(dict, len)
-	if ok Fuzz.keep else crash "error position past the end of the input"
+	text_row : Try(Row, _)
+	text_row = Cbor.parse_with(bytes, { fields: Camel, int_from_text: Bool.True })
+	text_ints : Try(List(I8), _)
+	text_ints = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
+	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(raw, len) and in_input(small, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
+	if !ok {
+		crash "error position past the end of the input"
+	}
+	# path_at at the error position of each parse, and at the start, the middle and the end.
+	positions = [row, camel, text_row].keep_oks(
+		|r| match r {
+			Err(InvalidCbor(pos)) => Ok(pos)
+			_ => Err(NoPosition)
+		},
+	).concat([0, len // 2, len])
+	paths = positions.map(|pos| Cbor.path_at(bytes, pos))
+	# The root item starts at 0, so its path is [] when the input is not empty.
+	if len > 0 and paths.get(paths.len() - 3) != Ok(Ok([])) {
+		crash "path_at(bytes, 0) is not []"
+	}
+	Fuzz.keep
 }
 
 target = Fuzz.target_with!({

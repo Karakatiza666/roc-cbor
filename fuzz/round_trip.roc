@@ -7,6 +7,7 @@ import fuzz.Fuzz
 import pkg.Cbor
 
 # L1 target: Cbor.parse(Cbor.encode(v)) gives v back, for random values of one record type.
+# Cbor.parse_with with int_from_text gives the same value.
 
 Kind : [Empty, One(U32), Two(Str, I16)]
 
@@ -64,9 +65,13 @@ item = {
 
 test! : Item => Fuzz.Outcome
 test! = |value| {
+	bytes = Cbor.encode(value)
 	back : Try(Item, _)
-	back = Cbor.parse(Cbor.encode(value))
-	if back == Ok(value) Fuzz.keep else crash "the round trip changed the value"
+	back = Cbor.parse(bytes)
+	# int_from_text changes nothing when the integers are CBOR integers.
+	with_text : Try(Item, _)
+	with_text = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
+	if back == Ok(value) and with_text == back Fuzz.keep else crash "the round trip changed the value"
 }
 
 target = Fuzz.target_with!({

@@ -29,6 +29,10 @@ import cbor.Cbor
 | `Cbor.encode` | `a -> List(U8)` | Write a value as CBOR. It cannot fail. |
 | `Cbor.parse` | `List(U8) -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value. The number in `InvalidCbor` is the byte position of the error. |
 | `Cbor.parse_camel` | the same as `parse` | Read record fields in camelCase: the field `user_id` is read from the key `userId`. |
+| `Cbor.parse_with` | `List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value with options (table "Options") |
+| `Cbor.Options` | `{ fields : [Snake, Camel], int_from_text : Bool }` | The options of `parse_with` |
+| `Cbor.path_at` | `List(U8), U64 -> Try(List(Cbor.Step), [NotFound])` | The path to the item that starts at a position, for example the position of `InvalidCbor(pos)` |
+| `Cbor.Step` | `[Index(U64), Key(Str)]` | One step of a path: an array index or a map key |
 | `Cbor.Bytes` | `Cbor.Bytes := List(U8)` | A field that crosses as a CBOR byte string. `Cbor.Bytes.(list)` makes one. `bytes.to_list()` gives the list. |
 | `Cbor.Parseable` | `where` alias | A function that calls `Cbor.parse` with a type variable has `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` |
 | `Cbor.Encodable` | `where` alias | A function that calls `Cbor.encode` with a type variable has `where [a.Cbor.Encodable([])]` |
@@ -51,6 +55,30 @@ parsed = Cbor.parse(bytes)
 `parse` gives `Err(InvalidCbor(pos))` when the bytes are not in the profile or do not fit the type.
 It gives `Err(MissingRequiredField(name))` when a record field is absent.
 A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `encoder_for : _` (Roc langref, "Parsers").
+
+### Options
+
+| Field | Value | Effect |
+| --- | --- | --- |
+| `fields` | `Snake` | A record field `user_id` reads the key `user_id` (as `parse`) |
+| | `Camel` | A record field `user_id` reads the key `userId` (as `parse_camel`) |
+| `int_from_text` | `Bool.False` | An integer type reads CBOR integers, and floats as the table "Profile" says (as `parse` and `parse_camel`) |
+| | `Bool.True` | An integer type (`U8` to `I64`) also reads text that is a canonical decimal integer in the range of the type: `0`, or `-?[1-9][0-9]*`. Other text (`-0`, `01`, `+1`, `1.0`, spaces) is an error. A `Str` field does not change. |
+
+`int_from_text` is for a peer that sends a 64-bit integer as text, for example a SQL `CAST(id AS TEXT)`.
+
+```roc
+Row : { name : Str, id : I64 }
+
+rows : Try(List(Row), _)
+rows = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
+
+# [{"name": "a", "id": 1.5}]: the error is at the value of "id" (position 12)
+expect Cbor.path_at(bytes, 12) == Ok([Index(0), Key("id")])
+```
+
+`path_at` gives `Err(NotFound)` when no item starts at the position (a map key, or a position in the middle of an item), or when the bytes before it are not valid.
+The path of the root item is `[]`.
 
 ## Data model
 
@@ -81,7 +109,7 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | Length | Definite only. An indefinite length (`0x5f`, `0x7f`, `0x9f`, `0xbf`) is an error. | Definite |
 | Argument width | Any (1, 2, 4 or 8 bytes), also longer than needed | Shortest, for integers and for text and byte string lengths |
 | Container head | 1, 2, 4 or 8 bytes | 1 byte for 23 items or less, else 3 bytes (65,535 or less), else 5 bytes. So an array of 24 items has a 3 byte head. |
-| Integer | Major types 0 and 1, up to 64 bits. A float with no fraction is also read as an integer, so JS can send 2^53 and more as a float. | Major types 0 and 1 |
+| Integer | Major types 0 and 1, up to 64 bits. A float with no fraction is also read as an integer when its size is 2^53 - 1 or less (a JS Number). A float of 2^53 or more is an error, because one such float is the rounded value of many integers. With `int_from_text`, also canonical decimal text (section "Options"). | Major types 0 and 1 |
 | Float | f16, f32, f64. An integer is also read as a float. An `F32` reads a finite value outside the F32 range as an error (not as an infinity). | `F64` as f64 (9 bytes, never shortened). `F32` as f32 (5 bytes). |
 | `null`, `undefined` | Both read as `Err(Null)` of a `Try(a, [Null])` | `null` |
 | Tag (major type 6) | An error, as a value. It is skipped in the value of an unknown record field. | Not written |
@@ -118,8 +146,8 @@ Known limits:
 | --- | --- |
 | Format | `roc fmt --check src tests examples fuzz` |
 | Check | `roc check src/main.roc` |
-| Expects of the module (48) | `roc test src/main.roc` |
-| RFC 8949 Appendix A (169 expects) | `roc test tests/rfc8949.roc` |
+| Expects of the module (78) | `roc test src/main.roc` |
+| RFC 8949 Appendix A (170 expects) | `roc test tests/rfc8949.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
 
@@ -129,8 +157,8 @@ roc-fuzz runs on Linux x86-64 and macOS arm64 only. A failure is saved in `.cach
 
 | Target | Property |
 | --- | --- |
-| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse` and `Cbor.parse_camel`. Target types: a record with nested lists and `Try` fields, `List(U64)`, `Str`, `Try(U64, [Null])`, `Cbor.Bytes`, `List(U8)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
-| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)` for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, lists, tuples, tags, `Try(_, [Null])`) |
+| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists and `Try` fields, `List(U64)`, `Str`, `Try(U64, [Null])`, `Cbor.Bytes`, `List(U8)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
+| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, lists, tuples, tags, `Try(_, [Null])`) |
 
 `scripts/bundle.sh` makes `dist/<hash>.tar.zst` and prints its release URL.
 `scripts/test_bundle.sh` runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep`.

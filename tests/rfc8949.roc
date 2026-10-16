@@ -185,13 +185,14 @@ expect reads(1.5.F32, "f93e00")
 expect reads(-4.0.F32, "f9c400")
 expect reads(1.5.F32, "fb3ff8000000000000")
 
-# An integer is read as a float, and a float with no fraction is read as an integer
-# (JS writes 2^53 and more as a float).
+# An integer is read as a float. A float with no fraction is read as an integer only when its
+# size is 2^53 - 1 or less: a larger float can be the rounded value of many integers.
 
 expect reads(100.0.F64, "1864")
 expect reads(-1.0.F64, "20")
 expect reads(1.U64, "f93c00")
-expect reads(9007199254740992.U64, "fb4340000000000000")
+expect reads(9007199254740991.U64, "fb433fffffffffffff")
+expect error_at(0.U64, "fb4340000000000000") == Ok(0)
 expect reads(-4.I64, "f9c400")
 expect error_at(0.U64, "f93e00") == Ok(0)
 expect error_at(0.U64, "f97e00") == Ok(0)
