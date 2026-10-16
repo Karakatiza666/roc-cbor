@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-24.04
     permissions: { contents: read }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-roc
         with: { token: "${{ github.token }}", nightly-tag: "${{ inputs.roc-nightly || '' }}" }
       - run: scripts/bundle.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with: { name: bundle, path: dist, if-no-files-found: error }
   test:
     needs: bundle
@@ -36,10 +36,10 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-roc
         with: { token: "${{ github.token }}", nightly-tag: "${{ inputs.roc-nightly || '' }}" }
       - run: scripts/all_tests.sh
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with: { name: bundle, path: dist }
       - run: scripts/test_bundle.sh
