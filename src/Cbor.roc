@@ -17,17 +17,18 @@
 ## Profile: definite lengths only. Any argument width is read. Integers are major types 0 and 1.
 ## A float with no fraction also reads as an integer when its size is 2^53 - 1 or less. Floats are f16, f32 or f64 when read, f64
 ## (F32: f32) when written. `null` and `undefined` both read as `Err(Null)` of a `Try(a, [Null])`.
-## A byte string reads as a `List(U8)`. A `List(U8)` writes as an array (the protocol has no bytes hook).
-## `Cbor.Bytes` reads and writes a byte string (major type 2).
+## A byte string reads as a `List(U8)`, and so does an array. A `List(U8)` writes as an array (the protocol has no bytes hook).
+## `Cbor.Bytes` writes a byte string (major type 2). It reads a byte string or an array of integers 0 to 255.
+## A `Dec` writes as an integer when it has no fraction, else as a decimal fraction (tag 4, exact). It reads an integer, a decimal fraction or a float.
 Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 
-	## The options of `parse_with`.
+	## The options of `parse_with`. Each field is optional: `{}` is the same as `parse`.
 	##
-	## | Field | Value |
-	## | --- | --- |
-	## | `fields` | `Snake`: a record field `user_id` reads the key `user_id`. `Camel`: it reads the key `userId`. |
-	## | `int_from_text` | `Bool.True`: an integer type (`U8` to `I64`) also reads text that is a canonical decimal integer in its range: `0`, or `-?[1-9][0-9]*`. Other text is an error. |
-	Options : { fields : [Snake, Camel], int_from_text : Bool }
+	## | Field | Default | Value |
+	## | --- | --- | --- |
+	## | `fields` | `Snake` | `Snake`: a record field `user_id` reads the key `user_id`. `Camel`: it reads the key `userId`. |
+	## | `int_from_text` | `Bool.False` | `Bool.True`: an integer type (`U8` to `I64`) also reads text that is a canonical decimal integer in its range: `0`, or `-?[1-9][0-9]*`. Other text is an error. |
+	Options : { fields ?: [Snake, Camel], int_from_text ?: Bool }
 
 	## One step of the path that `path_at` gives: an array index or a map key.
 	Step : [Index(U64), Key(Str)]
@@ -49,25 +50,57 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 			a.encoder_for : Cbor -> (a, List(U8) -> Try(List(U8), err)),
 		]
 
+	## The short form of `Cbor.Parseable`. The errors `InvalidCbor(U64)` and
+	## `MissingRequiredField(Str)` are in the alias. `errs` is the rest of the open union.
+	## `where [a.Cbor.Readable(errs)]` is the same as
+	## `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])]`.
+	## The compiler does not allow `..` in an alias, so a form with no `errs` is not possible.
+	a.Readable(errs) :
+		where [
+			a.parser_for : Cbor -> (Cbor.State -> Try({ value : a, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str), ..errs])),
+		]
+
+	## The short form of `Cbor.Encodable([])`: a type that `Cbor.encode` can write. Use it as
+	## `where [a.Cbor.Writable]`.
+	a.Writable :
+		where [
+			a.encoder_for : Cbor -> (a, List(U8) -> Try(List(U8), [])),
+		]
+
 	## Bytes that cross as a CBOR byte string (major type 2). A `List(U8)`
 	## writes as an array of numbers, because the derived encoder has no hook for bytes.
+	## The parser reads a byte string or an array of integers 0 to 255.
 	## `Cbor.Bytes.(list)` makes one, and `bytes.to_list()` gives the list back.
 	Bytes := List(U8).{
 
 		## Two values are equal when their lists are equal.
 		is_eq : _
 
-		## Reads a byte string (major type 2) only. An array of numbers is an error.
-		parser_for : encoding -> (state -> Try({ value : Cbor.Bytes, rest : state }, err))
-			where [
-				encoding.parse_bytes : encoding, state -> Try({ value : List(U8), rest : state }, err),
-			]
+		## Reads a byte string (major type 2), or an array of integers 0 to 255 (major type 4).
+		## A JS peer that sends bytes as a plain array (a Uint8Array copied to an Array) writes an array in CBOR.
+		## Another array item (a text, 256, -1) is an error at the item.
+		parser_for : Cbor -> (Cbor.State -> Try({ value : Cbor.Bytes, rest : Cbor.State }, [InvalidCbor(U64)]))
 		parser_for = |encoding| {
-			Encoding : encoding
-
 			|state| {
-				parsed = Encoding.parse_bytes(encoding, state)?
-				Ok({ value: Cbor.Bytes.(parsed.value), rest: parsed.rest })
+				h = head(state)?
+				if h.major == 2 {
+					parsed = Cbor.parse_bytes(encoding, state)?
+					Ok({ value: Cbor.Bytes.(parsed.value), rest: parsed.rest })
+				} else if h.major == 4 and h.arg <= state.bytes.len() - h.next {
+					# An array: each item is one byte, 0 to 255. Another item is an error at the item.
+					# Text never reads as an item, also with int_from_text.
+					strict = Cbor.{ fields: encoding.fields, int_from_text: Bool.False }
+					var $s = at(state, h.next)
+					var $out = List.with_capacity(h.arg)
+					for _ in (0.U64).until(h.arg) {
+						n = int(strict, $s)?
+						$out = $out.append(n.value.to_u8_try() ? |_| InvalidCbor($s.pos))
+						$s = n.rest
+					}
+					Ok({ value: Cbor.Bytes.($out), rest: $s })
+				} else {
+					Err(InvalidCbor(state.pos))
+				}
 			}
 		}
 
@@ -85,6 +118,11 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 		## The bytes as a list.
 		to_list : Cbor.Bytes -> List(U8)
 		to_list = |Cbor.Bytes.(bytes)| bytes
+
+		## Makes `Bytes` from a list. The pair of `to_list`. It is the same as `Cbor.Bytes.(list)`,
+		## for code that sees `Bytes` through an alias.
+		from_list : List(U8) -> Cbor.Bytes
+		from_list = |list| Cbor.Bytes.(list)
 	}
 
 	## Reads one CBOR item of the type `a` from all of `bytes`. The type comes from the annotation.
@@ -109,7 +147,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	parse_with : List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
 	parse_with = |bytes, options| {
 		Shape : a
-		parse_shape = Shape.parser_for(Cbor.{ fields: options.fields, int_from_text: options.int_from_text })
+		parse_shape = Shape.parser_for(Cbor.{ fields: options.?fields ?? Snake, int_from_text: options.?int_from_text ?? Bool.False })
 		parsed = parse_shape(Cbor.State.{ bytes, pos: 0, raw: 0 })?
 		if parsed.rest.pos == bytes.len() Ok(parsed.value) else Err(InvalidCbor(parsed.rest.pos))
 	}
@@ -256,6 +294,36 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 			Err(InvalidCbor(state.pos))
 		} else {
 			Ok({ value: f.value.to_f32_wrap(), rest: f.rest })
+		}
+	}
+
+	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
+	## Reads exactly: an integer (major types 0 and 1), and a decimal fraction (tag 4, `[exponent, mantissa]`,
+	## a mantissa that is an integer or a bignum of 127 bits or less). A decimal fraction with more than
+	## 18 fraction digits, or outside the range of a Dec, is an error at the tag. Also reads a float
+	## (f16, f32, f64), as its whole part plus its fraction rounded to a whole attos. A float has 15 to 17
+	## significant digits, so the Dec is exact to that. NaN, an infinity and a float outside the range of a
+	## Dec are errors. Another tag, and text, are errors.
+	parse_dec : Cbor, Cbor.State -> Try({ value : Dec, rest : Cbor.State }, [InvalidCbor(U64)])
+	parse_dec = |_, state| {
+		h = head(state)?
+		match h.major {
+			0 => Ok({ value: Dec.from_attos(h.arg.to_i128() * dec_scale), rest: at(state, h.next) })
+			1 => Ok({ value: Dec.from_attos((-1 - h.arg.to_i128()) * dec_scale), rest: at(state, h.next) })
+			6 => decimal_fraction(state)
+			_ => {
+				f = float(state)?
+				# The whole part and the fraction apart: the product of the f64 with 10^18 loses digits.
+				whole = f.value.to_i128_try() ? |_| InvalidCbor(state.pos)
+				if whole.abs_diff(0) > 170141183460469231731 {
+					return Err(InvalidCbor(state.pos))
+				}
+				frac = f.value - whole.to_f64()
+				scaled = frac * 1.0e18
+				frac_attos = (scaled + if scaled < 0.0 -0.5 else 0.5).to_i128_try() ? |_| InvalidCbor(state.pos)
+				attos = (whole * dec_scale).plus_try(frac_attos) ? |_| InvalidCbor(state.pos)
+				Ok({ value: Dec.from_attos(attos), rest: f.rest })
+			}
 		}
 	}
 
@@ -467,6 +535,25 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	encode_f32 = |value, out| Ok(put_be(out.append(0xfa), value.to_bits().to_u64(), 4))
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
+	## A Dec with no fraction, from -2^64 to 2^64 - 1, writes as an integer (major types 0 and 1).
+	## Any other Dec writes as a decimal fraction (RFC 8949 3.4.4): the tag 4 and the array
+	## `[exponent, mantissa]`, exact. The value in attos (10^-18) is the mantissa, with the exponent -18,
+	## then each trailing zero digit moves to the exponent. So 3.14159 is `[-5, 314159]`.
+	## A mantissa outside the 64 bit integers is a bignum (tag 2 or 3 with a byte string, 1 to 16 bytes).
+	encode_dec : Dec, List(U8) -> Try(List(U8), [])
+	encode_dec = |value, out| {
+		attos = value.to_attos()
+		whole = attos // dec_scale
+		if attos % dec_scale == 0 and whole >= 0 and whole <= 18446744073709551615 {
+			Ok(put_head(out, 0, whole.to_u64_wrap()))
+		} else if attos % dec_scale == 0 and whole < 0 and whole >= -18446744073709551616 {
+			Ok(put_head(out, 1, (-1 - whole).to_u64_wrap()))
+		} else {
+			Ok(put_decimal_fraction(out, attos))
+		}
+	}
+
+	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
 	encode_record : List(U8), U64, ({ out : List(U8), n : U64 }, ({ out : List(U8), n : U64 }, Str, (List(U8) -> Try(List(U8), err)) -> Try({ out : List(U8), n : U64 }, err)) -> Try({ out : List(U8), n : U64 }, err)) -> Try(List(U8), err)
 	encode_record = |out, count, write_fields| {
 		start = out.len()
@@ -509,6 +596,115 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 			}
 		}
 }
+
+## A decimal fraction (RFC 8949 3.4.4): the tag 4, then an array of 2: the exponent e and the mantissa m.
+## The value is m * 10^e, read exactly. It is an error at the tag when it has more than 18 fraction
+## digits or is outside the range of a Dec.
+decimal_fraction : Cbor.State -> Try({ value : Dec, rest : Cbor.State }, [InvalidCbor(U64)])
+decimal_fraction = |state| {
+	bad = InvalidCbor(state.pos)
+	strict = Cbor.{ fields: Snake, int_from_text: Bool.False }
+	tag = head(state)?
+	arr = head(at(state, tag.next))?
+	if tag.arg != 4 or arr.major != 4 or arr.arg != 2 {
+		return Err(bad)
+	}
+	e = int(strict, at(state, arr.next))?
+	m = dec_mantissa(e.rest)?
+	attos = scale_pow10(m.value, e.value + 18) ? |_| bad
+	Ok({ value: Dec.from_attos(attos), rest: m.rest })
+}
+
+## The mantissa of a decimal fraction: an integer, or a bignum (tag 2 or 3 with a byte string).
+dec_mantissa : Cbor.State -> Try({ value : I128, rest : Cbor.State }, [InvalidCbor(U64)])
+dec_mantissa = |state| {
+	strict = Cbor.{ fields: Snake, int_from_text: Bool.False }
+	h = head(state)?
+	if h.major == 0 or h.major == 1 {
+		int(strict, state)
+	} else if h.major == 6 and (h.arg == 2 or h.arg == 3) {
+		b = Cbor.parse_bytes(strict, at(state, h.next))?
+		var $lead = 0.U64
+		for byte in b.value {
+			if byte != 0 {
+				break
+			}
+			$lead = $lead + 1
+		}
+		digits = b.value.drop_first($lead)
+		if digits.len() > 16 {
+			return Err(InvalidCbor(state.pos))
+		}
+		n = digits.fold(0.U128, |acc, x| acc.shl_wrap(8).bitwise_or(x.to_u128()))
+		i = n.to_i128_try() ? |_| InvalidCbor(state.pos)
+		Ok({ value: if h.arg == 2 i else -1 - i, rest: b.rest })
+	} else {
+		Err(InvalidCbor(state.pos))
+	}
+}
+
+## m * 10^shift as an integer: a negative shift needs a mantissa that divides, else an error.
+## A mantissa of 127 bits has at most 39 digits, so each loop ends in 39 steps or less, also for a huge shift.
+scale_pow10 : I128, I128 -> Try(I128, [OutOfRange])
+scale_pow10 = |m, shift| {
+	if m == 0 {
+		return Ok(0)
+	}
+	var $v = m
+	if shift >= 0 {
+		for _ in (0.I128).until(shift) {
+			$v = $v.times_try(10) ? |_| OutOfRange
+		}
+	} else {
+		for _ in (0.I128).until(-shift) {
+			if $v % 10 != 0 {
+				return Err(OutOfRange)
+			}
+			$v = $v // 10
+		}
+	}
+	Ok($v)
+}
+
+## The decimal fraction of `attos` (a nonzero count of 10^-18): the tag 4, `[exponent, mantissa]`.
+## The exponent starts at -18, and each trailing zero digit of the mantissa moves to the exponent.
+put_decimal_fraction : List(U8), I128 -> List(U8)
+put_decimal_fraction = |out, attos| {
+	var $m = attos
+	var $e = -18.I64
+	while $m % 10 == 0 {
+		$m = $m // 10
+		$e = $e + 1
+	}
+	put_mantissa(put_int(out.append(0xc4).append(0x82), $e), $m)
+}
+
+## An integer when it fits major type 0 or 1, else a bignum: tag 2 (tag 3: -1 - n) and a byte string.
+put_mantissa : List(U8), I128 -> List(U8)
+put_mantissa = |out, m| {
+	if m >= 0 and m <= 18446744073709551615 {
+		put_head(out, 0, m.to_u64_wrap())
+	} else if m < 0 and m >= -18446744073709551616 {
+		put_head(out, 1, (-1 - m).to_u64_wrap())
+	} else {
+		n = (if m >= 0 m else -1 - m).to_u128_wrap()
+		all : List(U8)
+		all = (0.U64).until(16).map(|i| n.shr_zf_wrap((8 * (15 - i)).to_u8_wrap()).to_u8_wrap()).collect()
+		var $lead = 0.U64
+		for byte in all {
+			if byte != 0 {
+				break
+			}
+			$lead = $lead + 1
+		}
+		digits = all.drop_first($lead)
+		put_head(out.append(if m >= 0 0xc2 else 0xc3), 2, digits.len()).concat(digits)
+	}
+}
+
+## One Dec unit is 10^-18, so a whole number n is n * dec_scale attos.
+dec_scale : I128
+dec_scale = 1_000_000_000_000_000_000
 
 at : Cbor.State, U64 -> Cbor.State
 at = |state, pos| Cbor.State.{ bytes: state.bytes, pos, raw: 0 }
@@ -951,10 +1147,266 @@ expect {
 	parsed == Ok(v)
 }
 
-## Cbor.Bytes reads only a byte string: an array of numbers is an error.
+## Cbor.Bytes also reads an array of integers 0 to 255 (a JS peer that sends bytes as a plain array).
 expect {
 	r : Try(Cbor.Bytes, _)
 	r = Cbor.parse([0x83, 0x01, 0x02, 0x03])
+	r == Ok(Cbor.Bytes.([1, 2, 3]))
+}
+
+## The array form also works as a record field, when empty, and with a float that has no fraction (a JS Number).
+expect {
+	r : Try({ id : U64, data : Cbor.Bytes }, _)
+	r = Cbor.parse([0xa2, 0x62, 0x69, 0x64, 0x07, 0x64, 0x64, 0x61, 0x74, 0x61, 0x82, 0x00, 0x18, 0xff])
+	r == Ok({ id: 7, data: Cbor.Bytes.([0, 255]) })
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x80])
+	r == Ok(Cbor.Bytes.([]))
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x81, 0xfb, 0x40, 0x08, 0, 0, 0, 0, 0, 0])
+	r == Ok(Cbor.Bytes.([3]))
+}
+
+## An item of the array that is not 0 to 255 is an error at the item: 256, -1, 1.5, text, and the count of a long array.
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x82, 0x01, 0x19, 0x01, 0x00])
+	r == Err(InvalidCbor(2))
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x82, 0x01, 0x20])
+	r == Err(InvalidCbor(2))
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x81, 0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
+	r == Err(InvalidCbor(1))
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x81, 0x61, 0x31])
+	r == Err(InvalidCbor(1))
+}
+
+## Text is not an item, also with int_from_text.
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse_with([0x81, 0x61, 0x31], { fields: Snake, int_from_text: Bool.True })
+	r == Err(InvalidCbor(1))
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x9b, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00])
+	r == Err(InvalidCbor(0))
+}
+
+## Another type (text, a map, an integer) is still an error at the start.
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x61, 0x31])
+	r == Err(InvalidCbor(0))
+}
+
+expect {
+	r : Try(Cbor.Bytes, _)
+	r = Cbor.parse([0x01])
+	r == Err(InvalidCbor(0))
+}
+
+## List(U8) reads a byte string, also as a record field, and an array (the same as before this release).
+expect {
+	r : Try({ id : U64, data : List(U8) }, _)
+	r = Cbor.parse([0xa2, 0x62, 0x69, 0x64, 0x07, 0x64, 0x64, 0x61, 0x74, 0x61, 0x43, 0x01, 0x02, 0x03])
+	r == Ok({ id: 7, data: [1, 2, 3] })
+}
+
+expect {
+	r : Try(List(U8), _)
+	r = Cbor.parse([0x82, 0x01, 0x02])
+	r == Ok([1, 2])
+}
+
+# Dec
+
+## A Dec with no fraction writes as an integer: an untyped literal list works as a SQL parameter list.
+expect Cbor.encode([1]) == [0x81, 0x01]
+expect Cbor.encode(0.Dec) == [0x00]
+expect Cbor.encode(1000.Dec) == [0x19, 0x03, 0xe8]
+expect Cbor.encode(-1.Dec) == [0x20]
+expect Cbor.encode(-1000.Dec) == [0x39, 0x03, 0xe7]
+expect Cbor.encode(18446744073709551615.Dec) == [0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+expect Cbor.encode(-18446744073709551616.Dec) == [0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## A Dec with a fraction writes as a decimal fraction, tag 4 and [exponent, mantissa]: 3.14159 is [-5, 314159].
+expect Cbor.encode(3.14159.Dec) == [0xc4, 0x82, 0x24, 0x1a, 0x00, 0x04, 0xcb, 0x2f]
+expect Cbor.encode(0.1.Dec) == [0xc4, 0x82, 0x20, 0x01]
+expect Cbor.encode(1.1.Dec) == [0xc4, 0x82, 0x20, 0x0b]
+expect Cbor.encode(-0.5.Dec) == [0xc4, 0x82, 0x20, 0x24]
+expect Cbor.encode(0.000000000000000001.Dec) == [0xc4, 0x82, 0x31, 0x01]
+
+## A whole Dec outside the integer range of CBOR is a decimal fraction too, with a positive exponent: 10^20 is [20, 1].
+expect Cbor.encode(100000000000000000000.Dec) == [0xc4, 0x82, 0x14, 0x01]
+
+## A mantissa outside the 64 bit integers is a bignum (tag 2, tag 3: -1 - n) with a byte string.
+expect Cbor.encode(18446744073709551616.Dec) == [0xc4, 0x82, 0x00, 0xc2, 0x49, 0x01, 0, 0, 0, 0, 0, 0, 0, 0]
+expect Cbor.encode(Dec.highest) == [0xc4, 0x82, 0x31, 0xc2, 0x50, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+expect Cbor.encode(Dec.lowest) == [0xc4, 0x82, 0x31, 0xc3, 0x50, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## Dec reads an integer, a decimal fraction or a float.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0x18, 0x2a])
+	r == Ok(42)
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+	r == Ok(-18446744073709551616)
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
+	r == Ok(1.5)
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xf9, 0x3e, 0x00])
+	r == Ok(1.5)
+}
+
+## A Dec round trips exactly: whole, with a fraction, the smallest unit, the largest and smallest Dec, negative.
+expect {
+	xs : List(Dec)
+	xs = [0, 1, -1, 1000000, 2.5, -0.25, 0.1, 1234.5, 3.14159, -3.14159, 0.00013, 0.000000000000000001, -0.000000000000000001, 18446744073709551616, -18446744073709551617, 100000000000000000000, -100000000000000000000, 170141183460469231731, Dec.highest, Dec.lowest]
+	r : Try(List(Dec), _)
+	r = Cbor.parse(Cbor.encode(xs))
+	r == Ok(xs)
+}
+
+## Dec reads a decimal fraction: a positive exponent, a mantissa with spare zeros, a bignum with leading zero bytes.
+expect {
+	r : Try(List(Dec), _)
+	r = Cbor.parse([0x83, 0xc4, 0x82, 0x02, 0x03, 0xc4, 0x82, 0x31, 0x0a, 0xc4, 0x82, 0x31, 0xc2, 0x42, 0x00, 0x01])
+	r == Ok([300, 0.000000000000000010, 0.000000000000000001])
+}
+
+## A decimal fraction with more than 18 fraction digits, or out of the range of a Dec, is an error at the tag.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x33, 0x01])
+	r == Err(InvalidCbor(0))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x15, 0x01])
+	r == Err(InvalidCbor(0))
+}
+
+## A bignum mantissa with leading zero bytes (17 bytes, the value 1) reads. A huge exponent is an error, with no long loop.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x31, 0xc2, 0x51, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01])
+	r == Ok(0.000000000000000001)
+}
+
+expect {
+	r : Try(List(Dec), _)
+	r = Cbor.parse([0x82, 0xc4, 0x82, 0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0xc4, 0x82, 0x3b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
+	r == Err(InvalidCbor(1))
+}
+
+## The mantissa 10 with the exponent -19 is the whole attos 1.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x32, 0x0a])
+	r == Ok(0.000000000000000001)
+}
+
+## Another tag, an array of 3, a text mantissa, a bignum of 17 bytes, and cut input are errors.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc5, 0x82, 0x20, 0x01])
+	r == Err(InvalidCbor(0))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x83, 0x20, 0x01, 0x01])
+	r == Err(InvalidCbor(0))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x20, 0x61, 0x31])
+	r == Err(InvalidCbor(3))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x31, 0xc2, 0x51].concat(List.repeat(1, 17)))
+	r == Err(InvalidCbor(3))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0xc4, 0x82, 0x24])
+	r == Err(InvalidCbor(3))
+}
+
+## A decimal fraction in a record field, between other fields.
+expect {
+	v : { a : U64, price : Dec, b : Str }
+	v = { a: 1, price: 19.99, b: "x" }
+	r : Try({ a : U64, price : Dec, b : Str }, _)
+	r = Cbor.parse(Cbor.encode(v))
+	r == Ok(v)
+}
+
+## A small fraction is rounded to the nearest attos, not cut (an f64 of 0.00013 times 10^18 is a little under 130000000000000).
+expect {
+	r : Try(List(Dec), _)
+	r = Cbor.parse(Cbor.encode([0.00013.F64, 0.00104, 0.0021, -0.00026]))
+	r == Ok([0.00013, 0.00104, 0.0021, -0.00026])
+}
+
+## NaN, an infinity and a float outside the range of a Dec are errors.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse(Cbor.encode(F64.nan))
+	r == Err(InvalidCbor(0))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse(Cbor.encode(F64.infinity))
+	r == Err(InvalidCbor(0))
+}
+
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse(Cbor.encode(1.0e30.F64))
+	r == Err(InvalidCbor(0))
+}
+
+## Text, a map and a bool are errors.
+expect {
+	r : Try(Dec, _)
+	r = Cbor.parse([0x61, 0x31])
 	r == Err(InvalidCbor(0))
 }
 
@@ -1239,3 +1691,35 @@ expect Cbor.path_at([0xc1, 0x82, 0x01, 0x02], 3) == Ok([Index(1)])
 
 ## 100,000 nested arrays: a loop, not a recursion.
 expect Cbor.path_at(List.repeat(0x81, 100000).append(0x00), 100000) == Ok(List.repeat(Index(0), 100000))
+
+## Options: each field is optional. The full record, a record bound with let, one field, and no field.
+expect {
+	bytes = [0xa1, 0x66, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x61, 0x37]
+	full : Try({ user_id : U64 }, _)
+	full = Cbor.parse_with(bytes, { fields: Camel, int_from_text: Bool.True })
+	opts = { fields: Camel, int_from_text: Bool.True }
+	bound : Try({ user_id : U64 }, _)
+	bound = Cbor.parse_with(bytes, opts)
+	only_text : Try({ user_id : U64 }, _)
+	only_text = Cbor.parse_with([0xa1, 0x67, 0x75, 0x73, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x61, 0x37], { int_from_text: Bool.True })
+	only_camel : Try({ user_id : U64 }, _)
+	only_camel = Cbor.parse_with(bytes, { fields: Camel })
+	none : Try({ user_id : U64 }, _)
+	none = Cbor.parse_with([0xa1, 0x67, 0x75, 0x73, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x07], {})
+	full == Ok({ user_id: 7 }) and bound == full and only_text == full and only_camel == Err(InvalidCbor(8)) and none == full
+}
+
+## Options: an omitted field has the default of `parse` (Snake, no int_from_text).
+expect {
+	snake_key = [0xa1, 0x67, 0x75, 0x73, 0x65, 0x72, 0x5f, 0x69, 0x64, 0x07]
+	a : Try({ user_id : U64 }, _)
+	a = Cbor.parse_with(snake_key, {})
+	b : Try({ user_id : U64 }, _)
+	b = Cbor.parse_with([0x61, 0x37], {})
+	c : Try(U64, _)
+	c = Cbor.parse_with([0x61, 0x37], {})
+	a == Ok({ user_id: 7 }) and b == Err(InvalidCbor(0)) and c == Err(InvalidCbor(0))
+}
+
+## Cbor.Bytes.from_list is the pair of to_list.
+expect Cbor.Bytes.from_list([1, 2, 3]).to_list() == [1, 2, 3] and Cbor.Bytes.from_list([1, 2, 3]) == Cbor.Bytes.([1, 2, 3])

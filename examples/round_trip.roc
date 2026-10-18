@@ -89,6 +89,11 @@ main! = |args| {
 		_ => echo!("path_at: no error\n")
 	}
 
+	# A D1 BLOB arrives as an array of numbers: Cbor.Bytes reads it. A Dec with no fraction is an integer.
+	blob : Try(Cbor.Bytes, _)
+	blob = Cbor.parse([0x82, 0x01, 0x18, 0xff])
+	echo!("blob: ${Str.inspect(blob)} params: ${hex(to_cbor([1, 2]))} ${hex(to_cbor([1.5]))}\n")
+
 	extra : Try(U64, _)
 	extra = Cbor.parse([0x01, 0x02])
 	echo!("extra byte: ${Str.inspect(extra)}\n")

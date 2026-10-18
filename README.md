@@ -16,10 +16,10 @@ You give a Roc type. The compiler derives the reader and the writer. You do not 
 ## Use
 
 Add the package to the header with its release URL. The release notes of each
-[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.1.0.
+[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.2.0 (section "Changes").
 
 ```roc
-app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.1.0/9QL2dCyq7bcmvAEZfDFwi8kBvWLCZpEMS4WQYnZisezw.tar.zst" }
+app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.2.0/GTUNBR1419Xvgw1eightgb14scrrWkoiTVkBPJ94yHMA.tar.zst" }
 
 import cbor.Cbor
 ```
@@ -30,17 +30,19 @@ import cbor.Cbor
 | `Cbor.parse` | `List(U8) -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value. The number in `InvalidCbor` is the byte position of the error. |
 | `Cbor.parse_camel` | the same as `parse` | Read record fields in camelCase: the field `user_id` is read from the key `userId`. |
 | `Cbor.parse_with` | `List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value with options (table "Options") |
-| `Cbor.Options` | `{ fields : [Snake, Camel], int_from_text : Bool }` | The options of `parse_with` |
+| `Cbor.Options` | `{ fields ?: [Snake, Camel], int_from_text ?: Bool }` | The options of `parse_with`. Each field is optional: `{}` is the same as `parse`. |
 | `Cbor.path_at` | `List(U8), U64 -> Try(List(Cbor.Step), [NotFound])` | The path to the item that starts at a position, for example the position of `InvalidCbor(pos)` |
 | `Cbor.Step` | `[Index(U64), Key(Str)]` | One step of a path: an array index or a map key |
-| `Cbor.Bytes` | `Cbor.Bytes := List(U8)` | A field that crosses as a CBOR byte string. `Cbor.Bytes.(list)` makes one. `bytes.to_list()` gives the list. |
+| `Cbor.Bytes` | `Cbor.Bytes := List(U8)` | A field that is written as a CBOR byte string. It reads a byte string or an array of integers 0 to 255. `Cbor.Bytes.(list)` or `Cbor.Bytes.from_list(list)` makes one. `bytes.to_list()` gives the list. |
 | `Cbor.Parseable` | `where` alias | A function that calls `Cbor.parse` with a type variable has `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` |
 | `Cbor.Encodable` | `where` alias | A function that calls `Cbor.encode` with a type variable has `where [a.Cbor.Encodable([])]` |
+| `Cbor.Readable` | `where` alias | The short form of `Cbor.Parseable`: `where [a.Cbor.Readable(errs)]` (section "Readable and Writable") |
+| `Cbor.Writable` | `where` alias | The short form of `Cbor.Encodable([])`: `where [a.Cbor.Writable]` |
 
 The other functions of `Cbor` (`parse_str`, `encode_record` and the like) are the codec protocol.
 The derived `parser_for` and `encoder_for` call them. An app does not call them. `Cbor.State` is opaque.
 
-`examples/round_trip.roc` uses each item of the table.
+`examples/round_trip.roc` uses each item of the table, except `Cbor.Readable` and `Cbor.Writable` (`tests/aliases.roc` uses them).
 
 ```roc
 Pkg : { name : Str, size : U64, tags : List(Str) }
@@ -58,11 +60,14 @@ A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `enc
 
 ### Options
 
+Each field of `Cbor.Options` is optional. An omitted field has its default: `fields` is `Snake`, `int_from_text` is `Bool.False`.
+So `{}`, `{ fields: Camel }`, `{ int_from_text: Bool.True }` and the full record all compile.
+
 | Field | Value | Effect |
 | --- | --- | --- |
-| `fields` | `Snake` | A record field `user_id` reads the key `user_id` (as `parse`) |
+| `fields` | `Snake` (default) | A record field `user_id` reads the key `user_id` (as `parse`) |
 | | `Camel` | A record field `user_id` reads the key `userId` (as `parse_camel`) |
-| `int_from_text` | `Bool.False` | An integer type reads CBOR integers, and floats as the table "Profile" says (as `parse` and `parse_camel`) |
+| `int_from_text` | `Bool.False` (default) | An integer type reads CBOR integers, and floats as the table "Profile" says (as `parse` and `parse_camel`) |
 | | `Bool.True` | An integer type (`U8` to `I64`) also reads text that is a canonical decimal integer in the range of the type: `0`, or `-?[1-9][0-9]*`. Other text (`-0`, `01`, `+1`, `1.0`, spaces) is an error. A `Str` field does not change. |
 
 `int_from_text` is for a peer that sends a 64-bit integer as text, for example a SQL `CAST(id AS TEXT)`.
@@ -71,7 +76,7 @@ A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `enc
 Row : { name : Str, id : I64 }
 
 rows : Try(List(Row), _)
-rows = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
+rows = Cbor.parse_with(bytes, { int_from_text: Bool.True })
 
 # [{"name": "a", "id": 1.5}]: the error is at the value of "id" (position 12)
 expect Cbor.path_at(bytes, 12) == Ok([Index(0), Key("id")])
@@ -79,6 +84,49 @@ expect Cbor.path_at(bytes, 12) == Ok([Index(0), Key("id")])
 
 `path_at` gives `Err(NotFound)` when no item starts at the position (a map key, or a position in the middle of an item), or when the bytes before it are not valid.
 The path of the root item is `[]`.
+
+### Readable and Writable
+
+`Cbor.Readable(errs)` and `Cbor.Writable` are short `where` aliases. `Cbor.Parseable` and `Cbor.Encodable` stay.
+
+| Alias | Is the same as | Use |
+| --- | --- | --- |
+| `a.Cbor.Writable` | `a.Cbor.Encodable([])` | A function that calls `Cbor.encode` with a type variable |
+| `a.Cbor.Readable(errs)` | `a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])` | A function that calls `Cbor.parse` with a type variable. The function can `match` on `InvalidCbor(pos)` and `MissingRequiredField(field)`. |
+
+```roc
+read : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
+read = |bytes|
+	match Cbor.parse(bytes) {
+		Ok(v) => Ok(v)
+		Err(MissingRequiredField(field)) => Err("missing ${field}")
+		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
+		Err(_) => Err("other")
+	}
+```
+
+A function with `Readable` can call a function with `Parseable`.
+`MissingRequiredField(Str)` can also be in the row of a `Parseable`: `a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])`.
+A form with no `errs` is not possible: the compiler does not allow `..` in an alias.
+`tests/aliases.roc` has generic helpers for a record, `List(Row)`, `List(I64)`, `Cbor.Bytes` and a type of your own with a closed reader.
+
+## Changes
+
+### 0.2.0
+
+| Change | Detail |
+| --- | --- |
+| `Cbor.Bytes` reads an array | A byte string or an array of integers 0 to 255. A JS peer that sends bytes as a plain array (for example a D1 BLOB, which D1 gives back as a JS array) writes a CBOR array. Before: an array was an error. Writing is the same (a byte string). |
+| `List(U8)` reads a byte string | No change: 0.1.0 already read a byte string as a `List(U8)`, and only that type (the list reader checks the major type, and `parse_u8` is the only item reader that takes a byte). A test now covers a byte string in a record field. |
+| `encode_dec` | A `Dec` writes as an integer when it has no fraction (-2^64 to 2^64 - 1), so an untyped literal such as `[1]` (a `List(Dec)`) is an array of CBOR integers, which a SQL parameter list of the platform needs. Any other `Dec` writes as a decimal fraction (RFC 8949 3.4.4, tag 4, `[exponent, mantissa]`), exact: `3.14159` is `c4 82 24 1a 00 04 cb 2f`. |
+| `parse_dec` | A `Dec` reads an integer and a decimal fraction (exact), and also a float (rounded to the nearest attos) for input from JS. |
+| `Options` fields are optional | `Cbor.Options` is `{ fields ?: [Snake, Camel], int_from_text ?: Bool }`. `{}` is the same as `parse`. `{ int_from_text: Bool.True }` and the full record still compile. |
+| `Cbor.Readable`, `Cbor.Writable` | Short `where` aliases next to `Parseable` and `Encodable` (section "Readable and Writable"). |
+| `Cbor.Bytes.from_list` | `List(U8) -> Cbor.Bytes`, the pair of `to_list`, for code that sees `Bytes` through an alias. |
+
+### 0.1.0
+
+First release: the codec protocol, `Cbor.Bytes`, `parse_camel`, `parse_with`, `path_at`.
 
 ## Data model
 
@@ -95,11 +143,12 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | Tag with more payloads | Map of one entry: the tag name, then an array of the payloads |
 | List, tuple | Array (major type 4). A tuple must have the exact length. |
 | `Str` | Text (major type 3). The reader checks UTF-8. |
-| `Cbor.Bytes` | Byte string (major type 2) |
+| `Cbor.Bytes` | Write: byte string (major type 2). Read: byte string or array of integers 0 to 255. |
 | `List(U8)` | Write: array of numbers. Read: byte string or array. |
 | `Bool` | `0xf4`, `0xf5` |
 | `U8` to `U64`, `I8` to `I64` | Integer (major types 0 and 1) |
 | `F32`, `F64` | Float (major type 7) |
+| `Dec` | Write: integer when it has no fraction (and fits), else decimal fraction (tag 4, exact). Read: integer, decimal fraction or float. |
 | `Dict(Str, v)` | Map with text keys. Read only. |
 
 ## Profile
@@ -112,7 +161,7 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | Integer | Major types 0 and 1, up to 64 bits. A float with no fraction is also read as an integer when its size is 2^53 - 1 or less (a JS Number). A float of 2^53 or more is an error, because one such float is the rounded value of many integers. With `int_from_text`, also canonical decimal text (section "Options"). | Major types 0 and 1 |
 | Float | f16, f32, f64. An integer is also read as a float. An `F32` reads a finite value outside the F32 range as an error (not as an infinity). | `F64` as f64 (9 bytes, never shortened). `F32` as f32 (5 bytes). |
 | `null`, `undefined` | Both read as `Err(Null)` of a `Try(a, [Null])` | `null` |
-| Tag (major type 6) | An error, as a value. It is skipped in the value of an unknown record field. | Not written |
+| Tag (major type 6) | An error, as a value (a `Dec` reads tag 4, and the tags 2 and 3 of its mantissa). It is skipped in the value of an unknown record field. | Not written |
 | Simple values other than `false`, `true`, `null`, `undefined` | An error | Not written |
 | Map key | Text only | Text only (record field names) |
 | Unknown record field | Skipped (the whole item) | |
@@ -121,13 +170,16 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | Count of an array or a map | More items than bytes after the head is an error at the head. So a bad count never makes a large list. | |
 | Unknown record field, nested | Skipped with a loop, not a recursion. Deep nesting does not overflow the stack. | |
 | Byte string read as a `List(U8)` | Each byte is one `U8`. A byte string read as a list of another type is an error. | |
+| Array read as `Cbor.Bytes` | Each item is an integer 0 to 255 (a float with no fraction of 2^53 - 1 or less also counts, as for any integer). Text is not an item, also with `int_from_text`. Another item is an error at the item. | |
+| `Dec`, integer | Major types 0 and 1: exact. | A `Dec` with no fraction from -2^64 to 2^64 - 1: major types 0 and 1. |
+| `Dec`, decimal fraction | Tag 4 and an array of 2, `[exponent, mantissa]`: exact, value `mantissa * 10^exponent`. The mantissa is an integer (major types 0 and 1) or a bignum (tag 2 or 3 and a byte string, 127 bits or less, leading zero bytes allowed). More than 18 fraction digits, a value outside the range of a `Dec` (about 1.7e20), another tag, another array length, or a text mantissa is an error at the tag (or at the mantissa for its own error). | Any other `Dec`: tag 4 and `[exponent, mantissa]`, exact. The mantissa is the count of attos (10^-18) with the exponent -18. Each trailing zero digit of the mantissa moves to the exponent (the smallest exponent form). A mantissa outside the 64 bit integers is a bignum (tag 2 for positive, tag 3 for negative with the value -1 - n, a byte string of 1 to 16 bytes, no leading zero). A whole `Dec` outside 2^64 has a positive exponent, for example 10^20 is `[20, 1]`. |
+| `Dec`, float | f16, f32, f64, for input from JS: the whole part plus the fraction rounded to the nearest attos (10^-18). NaN, an infinity and a value outside the range of a `Dec` are errors. Text is an error. | Not written |
 
 Not supported. The compiler gives "missing method" when the code uses them:
 
 | Type | Missing method |
 | --- | --- |
 | `U128`, `I128` | `parse_u128`, `encode_u128`, `parse_i128`, `encode_i128` |
-| `Dec` | `parse_dec`, `encode_dec` |
 | `Dict` with a key that is not `Str` | `parse_key_u64` and the like |
 | Any `Dict` as a value to write | `encode_dict` |
 
@@ -136,6 +188,9 @@ Known limits:
 | Limit | Reason |
 | --- | --- |
 | There is no camelCase writer. `Cbor.encode` writes the Roc field names (`user_id`). Only the reader has a camelCase form (`Cbor.parse_camel`). | The encode methods of the codec protocol (`encode_record` and the like) do not get the encoding value, so they cannot rename a field. |
+| A `Dec` with a fraction is written with the tag 4. A peer that does not read tag 4 (a plain JS CBOR decoder) cannot use it. A whole `Dec` is a plain integer, so a SQL parameter list such as `[1]` works. | The change gives an exact `Dec` round trip. A float is not exact for a `Dec`. |
+| A `Dec` that a peer sends as a float with more than 15 to 17 digits is rounded, as the float is. | A float has 53 bits. |
+| `Cbor.Bytes` writes a byte string, not an array. A peer that needs an array of numbers must write the list as `List(U8)`. A byte string (a `Uint8Array` in JS) is the right input for a D1 binding: D1 stores it as a BLOB, and gives a BLOB back as a plain JS array, which `Cbor.Bytes` reads. | The reader takes both forms. The writer has one form. |
 | A recursive type of your own (a tree) can overflow the stack on very deep input. | The derived parser of a recursive type calls itself once for each level of nesting. The package has no depth limit. An unknown record field is not affected: the package skips it with a loop. |
 
 ## Tests
@@ -146,8 +201,9 @@ Known limits:
 | --- | --- |
 | Format | `roc fmt --check src tests examples fuzz` |
 | Check | `roc check src/main.roc` |
-| Expects of the module (78) | `roc test src/main.roc` |
+| Expects of the module (132) | `roc test src/main.roc` |
 | RFC 8949 Appendix A (170 expects) | `roc test tests/rfc8949.roc` |
+| `Readable` and `Writable` (5 expects) | `roc test tests/aliases.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
 
@@ -157,7 +213,7 @@ roc-fuzz runs on Linux x86-64 and macOS arm64 only. A failure is saved in `.cach
 
 | Target | Property |
 | --- | --- |
-| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists and `Try` fields, `List(U64)`, `Str`, `Try(U64, [Null])`, `Cbor.Bytes`, `List(U8)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
+| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists and `Try` fields, `List(U64)`, `Str`, `Try(U64, [Null])`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
 | `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, lists, tuples, tags, `Try(_, [Null])`) |
 
 `scripts/bundle.sh` makes `dist/<hash>.tar.zst` and prints its release URL.
@@ -208,6 +264,7 @@ Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repositor
 | `src/main.roc` | Header of the package: exposes `Cbor` |
 | `src/Cbor.roc` | The format, its `expect`s and the doc comments |
 | `tests/rfc8949.roc` | The RFC 8949 Appendix A vectors |
+| `tests/aliases.roc` | Generic helpers with `Cbor.Readable` and `Cbor.Writable` |
 | `examples/round_trip.roc` | An app that uses each public item. It runs on the echo host of roc, with no platform. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `bundle.sh`, `test_bundle.sh` |

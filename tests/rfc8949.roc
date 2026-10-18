@@ -241,7 +241,7 @@ expect both(Cbor.Bytes.([1, 2, 3, 4]), "4401020304")
 expect reads([1.U8, 2, 3, 4], "4401020304")
 expect writes([1.U8, 2, 3, 4], "8401020304")
 expect error_at(Cbor.Bytes.([]), "6161") == Ok(0)
-expect error_at(Cbor.Bytes.([]), "83010203") == Ok(0)
+expect reads(Cbor.Bytes.([1, 2, 3]), "83010203")
 
 # Arrays, major type 4
 

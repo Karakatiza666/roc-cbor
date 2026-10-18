@@ -14,6 +14,8 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test src/main.roc
 # The RFC 8949 Appendix A vectors, through the public API of the package.
 "$ROC" test tests/rfc8949.roc
+# The short where aliases Cbor.Readable and Cbor.Writable, through the public API of the package.
+"$ROC" test tests/aliases.roc
 for f in examples/*.roc; do
 	"$ROC" check "$f"
 	"$ROC" "$f"

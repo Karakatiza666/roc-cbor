@@ -38,13 +38,17 @@ test! = |bytes| {
 	raw = Cbor.parse(bytes)
 	small : Try(List(U8), _)
 	small = Cbor.parse(bytes)
+	dec : Try(Dec, _)
+	dec = Cbor.parse(bytes)
+	decs : Try(List(Dec), _)
+	decs = Cbor.parse(bytes)
 	dict : Try(Dict(Str, U64), _)
 	dict = Cbor.parse(bytes)
 	text_row : Try(Row, _)
 	text_row = Cbor.parse_with(bytes, { fields: Camel, int_from_text: Bool.True })
 	text_ints : Try(List(I8), _)
 	text_ints = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
-	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(raw, len) and in_input(small, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
+	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(raw, len) and in_input(small, len) and in_input(dec, len) and in_input(decs, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
 	if !ok {
 		crash "error position past the end of the input"
 	}
