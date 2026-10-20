@@ -9,7 +9,7 @@ You give a Roc type. The compiler derives the reader and the writer. You do not 
 | --- | --- |
 | Module | `Cbor` (public), with the nested type `Cbor.Bytes` |
 | Dependencies | none |
-| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-10-12-2664a27`). Also tested on `nightly-2026-10-14-38a3029`. |
+| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-10-19-601b54c`). Also tested on `nightly-2026-10-12-2664a27` and `nightly-2026-10-14-38a3029` for 0.2.0 and before. |
 | Tests | `scripts/all_tests.sh` (section "Tests") |
 | License | UPL-1.0 (`LICENSE`) |
 
@@ -111,6 +111,15 @@ A form with no `errs` is not possible: the compiler does not allow `..` in an al
 `tests/aliases.roc` has generic helpers for a record, `List(Row)`, `List(I64)`, `Cbor.Bytes` and a type of your own with a closed reader.
 
 ## Changes
+
+### 0.2.1
+
+| Change | Detail |
+| --- | --- |
+| CI nightly | `.roc-version` is `nightly-2026-10-19-601b54c`. The code of the package does not change. |
+| Format | `roc fmt` of this nightly writes `if (cond) a else b` with brackets. The files of `src`, `tests`, `examples` and `fuzz` have them, so that `roc fmt --check` passes. |
+| Known issues | #12309 and #12310 do not reproduce on this nightly (the repros are in `research/roc-bugs/` of the `cloudflare-workers` repository). The rows in "Known compiler issues" say so. The workarounds stay, as an older nightly needs them. |
+| Fuzz target | `fuzz/parse_never_crashes.roc` has the optional field `extra ?: Bool` again: this nightly builds a parse into it. |
 
 ### 0.2.0
 
@@ -251,11 +260,11 @@ A tag has no `v`: roc reads the version from the URL, and the tag is a segment o
 
 | Issue | Effect | Workaround |
 | --- | --- | --- |
-| [roc-lang/roc#12309](https://github.com/roc-lang/roc/issues/12309) | A nominal or opaque type over a builtin (`Secret :: Str`) has no opt in, but the encoder still writes its value when it is in a record, a tuple or a tag. So `Cbor.encode` can write hidden data. | Back the type with a record: `Secret :: { text : Str }` |
-| [roc-lang/roc#12310](https://github.com/roc-lang/roc/issues/12310) | A function with no annotation gives a value that `Json` parsed. Another function takes that value with a `Cbor.Parseable` constraint. The compiler gives "type mismatch" and "type not determined". | Annotate the first function with the full result type |
-| No issue (seen on `nightly-2026-10-12-2664a27`, not on `nightly-2026-10-14-38a3029`) | Some programs that parse into a record with an optional field (`extra ?: Bool`) crash the compiler (SIGSEGV), with `Json.parse` too. A first build of the fuzz target had this crash. | Use a `Try(a, [Missing])` field, or a later nightly |
+| [roc-lang/roc#12309](https://github.com/roc-lang/roc/issues/12309) (does not reproduce on `nightly-2026-10-19-601b54c`; it reproduces on 10-09, 10-12 and 10-14) | A nominal or opaque type over a builtin (`Secret :: Str`) has no opt in, but the encoder still writes its value when it is in a record, a tuple or a tag. So `Cbor.encode` can write hidden data. | Back the type with a record: `Secret :: { text : Str }` |
+| [roc-lang/roc#12310](https://github.com/roc-lang/roc/issues/12310) (does not reproduce on `nightly-2026-10-19-601b54c`; it reproduces on 10-09, 10-12 and 10-14) | A function with no annotation gives a value that `Json` parsed. Another function takes that value with a `Cbor.Parseable` constraint. The compiler gives "type mismatch" and "type not determined". | Annotate the first function with the full result type |
+| No issue (seen on `nightly-2026-10-12-2664a27`, not on `nightly-2026-10-14-38a3029` or `nightly-2026-10-19-601b54c`) | Some programs that parse into a record with an optional field (`extra ?: Bool`) crash the compiler (SIGSEGV), with `Json.parse` too. A first build of the fuzz target had this crash. | Use a `Try(a, [Missing])` field, or a later nightly |
 
-Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repository. Both issues reproduce on `nightly-2026-10-14-38a3029`.
+Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repository. Both issues reproduce on `nightly-2026-10-14-38a3029`, and neither reproduces on `nightly-2026-10-19-601b54c`.
 
 ## Layout
 

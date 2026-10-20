@@ -8,9 +8,8 @@ import pkg.Cbor
 
 # L1 target: Cbor.parse, Cbor.parse_camel, Cbor.parse_with and Cbor.path_at never crash, for any
 # bytes and several target types.
-# The record has no optional field (`?:`): nightly-2026-10-12 crashes when it builds a parse into one.
 
-Row : { id : U64, name : Str, tags : List(Str), cells : List(List(I64)), note : Try(Str, [Null]), extra : Try(Bool, [Missing]) }
+Row : { id : U64, name : Str, tags : List(Str), cells : List(List(I64)), note : Try(Str, [Null]), extra ?: Bool }
 
 ## The error position is in the input, or at its end.
 in_input : Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]), U64 -> Bool

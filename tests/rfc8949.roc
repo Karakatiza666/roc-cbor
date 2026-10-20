@@ -9,7 +9,7 @@ import pkg.Cbor
 # Helpers
 
 hex_digit : U8 -> U8
-hex_digit = |c| if c >= 97 c - 87 else c - 48
+hex_digit = |c| if (c >= 97) c - 87 else c - 48
 
 hex : Str -> List(U8)
 hex = |s|

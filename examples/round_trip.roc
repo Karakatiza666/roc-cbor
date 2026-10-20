@@ -27,7 +27,7 @@ hex = |bytes|
 	bytes.fold(
 		"",
 		|acc, b| {
-			digit = |n| if n < 10 n + 48 else n + 87
+			digit = |n| if (n < 10) n + 48 else n + 87
 			acc.concat(Str.from_utf8([digit(b // 16), digit(b % 16)]) ?? "??")
 		},
 	)

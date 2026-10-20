@@ -29,10 +29,10 @@ Item : {
 
 ## NaN is not equal to itself, so the generator gives 0 in its place.
 no_nan64 : F64 -> F64
-no_nan64 = |f| if f.is_nan() 0.0 else f
+no_nan64 = |f| if (f.is_nan()) 0.0 else f
 
 no_nan32 : F32 -> F32
-no_nan32 = |f| if f.is_nan() 0.0 else f
+no_nan32 = |f| if (f.is_nan()) 0.0 else f
 
 kind : Fuzz.Generator(Kind)
 kind = Fuzz.map(
@@ -46,7 +46,7 @@ kind = Fuzz.map(
 )
 
 note : Fuzz.Generator(Try(Str, [Null]))
-note = Fuzz.map({ pick: Fuzz.u8, s: Fuzz.str }.Fuzz, |g| if g.pick % 2 == 0 Err(Null) else Ok(g.s))
+note = Fuzz.map({ pick: Fuzz.u8, s: Fuzz.str }.Fuzz, |g| if (g.pick % 2 == 0) Err(Null) else Ok(g.s))
 
 item : Fuzz.Generator(Item)
 item = {
@@ -73,7 +73,7 @@ test! = |value| {
 	# int_from_text changes nothing when the integers are CBOR integers.
 	with_text : Try(Item, _)
 	with_text = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
-	if back == Ok(value) and with_text == back Fuzz.keep else crash "the round trip changed the value"
+	if (back == Ok(value) and with_text == back) Fuzz.keep else crash "the round trip changed the value"
 }
 
 target = Fuzz.target_with!({
