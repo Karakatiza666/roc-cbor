@@ -8,6 +8,7 @@ import pkg.Cbor
 
 # L1 target: Cbor.parse(Cbor.encode(v)) gives v back, for random values of one record type.
 # Cbor.parse_with with int_from_text gives the same value.
+# A record with Err(Null) in a field reads back as Err(Missing): a null value in a map is no key.
 
 Kind : [Empty, One(U32), Two(Str, I16)]
 
@@ -21,7 +22,9 @@ Item : {
 	score : F64,
 	ratio : F32,
 	price : Dec,
-	note : Try(Str, [Null]),
+	note : Try(Str, [Missing]),
+	flag : Bool,
+	cells : List(Try(I64, [Null])),
 	kind : Kind,
 	pairs : List((U8, Str)),
 	nested : List(List(U64)),
@@ -45,8 +48,23 @@ kind = Fuzz.map(
 		},
 )
 
-note : Fuzz.Generator(Try(Str, [Null]))
-note = Fuzz.map({ pick: Fuzz.u8, s: Fuzz.str }.Fuzz, |g| if (g.pick % 2 == 0) Err(Null) else Ok(g.s))
+note : Fuzz.Generator(Try(Str, [Missing]))
+note = Fuzz.map({ pick: Fuzz.u8, s: Fuzz.str }.Fuzz, |g| if (g.pick % 2 == 0) Err(Missing) else Ok(g.s))
+
+cell : Fuzz.Generator(Try(I64, [Null]))
+cell = Fuzz.map({ pick: Fuzz.u8, n: Fuzz.u64 }.Fuzz, |g| if (g.pick % 2 == 0) Err(Null) else Ok(g.n.to_i64_wrap()))
+
+## The same row as written by a peer that gives a null for no value.
+Wire : { id : U64, note : Try(Str, [Null]) }
+
+wire : Item -> Wire
+wire = |v| {
+	id: v.id,
+	note: match v.note {
+		Ok(s) => Ok(s)
+		Err(Missing) => Err(Null)
+	},
+}
 
 item : Fuzz.Generator(Item)
 item = {
@@ -60,6 +78,8 @@ item = {
 	ratio: Fuzz.map(Fuzz.f32, no_nan32),
 	price: Fuzz.map({ a: Fuzz.u64, b: Fuzz.u64, z: Fuzz.u8 }.Fuzz, |g| Dec.from_attos((g.a.to_i64_wrap().to_i128() * 4_611_686_018_427_387_904 + g.b.to_i128()) // (10.I128).pow(g.z.to_i128() % 19))),
 	note,
+	flag: Fuzz.map(Fuzz.u8, |b| b % 2 == 0),
+	cells: Fuzz.list(cell, 6),
 	kind,
 	pairs: Fuzz.list(Fuzz.map({ k: Fuzz.u8, v: Fuzz.str }.Fuzz, |p| (p.k, p.v)), 4),
 	nested: Fuzz.list(Fuzz.list(Fuzz.u64, 30), 3),
@@ -73,7 +93,10 @@ test! = |value| {
 	# int_from_text changes nothing when the integers are CBOR integers.
 	with_text : Try(Item, _)
 	with_text = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
-	if (back == Ok(value) and with_text == back) Fuzz.keep else crash "the round trip changed the value"
+	# Err(Null) in a map field is not written, so it reads back as Err(Missing).
+	from_wire : Try({ id : U64, note : Try(Str, [Missing]) }, _)
+	from_wire = Cbor.parse(Cbor.encode(wire(value)))
+	if (back == Ok(value) and with_text == back and from_wire == Ok({ id: value.id, note: value.note })) Fuzz.keep else crash "the round trip changed the value"
 }
 
 target = Fuzz.target_with!({

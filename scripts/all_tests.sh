@@ -16,6 +16,8 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test tests/rfc8949.roc
 # The short where aliases Cbor.Readable and Cbor.Writable, through the public API of the package.
 "$ROC" test tests/aliases.roc
+# SQL rows: a Bool reads 0 and 1, a null value in a map is no key, through the public API of the package.
+"$ROC" test tests/rows.roc
 for f in examples/*.roc; do
 	"$ROC" check "$f"
 	"$ROC" "$f"

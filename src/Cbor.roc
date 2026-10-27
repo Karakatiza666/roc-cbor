@@ -16,7 +16,13 @@
 ##
 ## Profile: definite lengths only. Any argument width is read. Integers are major types 0 and 1.
 ## A float with no fraction also reads as an integer when its size is 2^53 - 1 or less. Floats are f16, f32 or f64 when read, f64
-## (F32: f32) when written. `null` and `undefined` both read as `Err(Null)` of a `Try(a, [Null])`.
+## (F32: f32) when written. `null` and `undefined` are the same.
+##
+## SQL rows: a `Bool` reads `false`, `true` and the integers 0 and 1, and writes `false` or `true`.
+## In a map read as a record, a `null` value is the same as no key: an optional field is absent, a
+## `Try(a, [Missing])` field is `Err(Missing)`, and a required field (also a `Try(a, [Null])` field) is
+## `MissingRequiredField`. `Err(Null)` in a record field writes no key. In another place (a list or a tuple
+## item, the root, a `Dict` value) a `null` reads only as `Err(Null)` of a `Try(a, [Null])`.
 ## A byte string reads as a `List(U8)`, and so does an array. A `List(U8)` writes as an array (the protocol has no bytes hook).
 ## `Cbor.Bytes` writes a byte string (major type 2). It reads a byte string or an array of integers 0 to 255.
 ## A `Dec` writes as an integer when it has no fraction, else as a decimal fraction (tag 4, exact). It reads an integer, a decimal fraction or a float.
@@ -203,15 +209,25 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
+	## Reads `false` and `true`, and also the integers 0 and 1 (a SQL database has no boolean and gives 0 and 1).
+	## The integer rules are the rules of an integer type, without text: a float 0.0 or 1.0 also reads.
+	## Another integer is an error.
 	parse_bool : Cbor, Cbor.State -> Try({ value : Bool, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_bool = |_, state|
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
 			Ok(0xf4) => Ok({ value: Bool.False, rest: at(state, state.pos + 1) })
 			Ok(0xf5) => Ok({ value: Bool.True, rest: at(state, state.pos + 1) })
-			_ => Err(InvalidCbor(state.pos))
+			Ok(_) =>
+				match int(Cbor.{ fields: Snake, int_from_text: Bool.False }, state) {
+					Ok({ value: 0, rest }) => Ok({ value: Bool.False, rest })
+					Ok({ value: 1, rest }) => Ok({ value: Bool.True, rest })
+					_ => Err(InvalidCbor(state.pos))
+				}
+			Err(_) => Err(InvalidCbor(state.pos))
 		}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
+	## Reads `null` and `undefined`. A record field never sees them: `parse_record_field` skips a `null` value.
 	parse_null : Cbor, Cbor.State -> Try(Cbor.State, [InvalidCbor(U64)])
 	parse_null = |_, state|
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
@@ -380,6 +396,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
+	## A key with a `null` or `undefined` value is skipped: the same as no key.
 	parse_record_field : Cbor,
 	Encoding.FieldName.FieldNames(_shape),
 	Cbor.State -> Try(
@@ -394,7 +411,11 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	)
 	parse_record_field = |_, _, state| {
 		key = text(state)?
-		Ok(TryField({ name: key.value, rest: key.rest }))
+		match key.rest.bytes.get(key.rest.pos) {
+			# A null or undefined value is the same as no key: the entry is skipped.
+			Ok(0xf6) | Ok(0xf7) => Ok(Continue(at(state, key.rest.pos + 1)))
+			_ => Ok(TryField({ name: key.value, rest: key.rest }))
+		}
 	}
 
 	## Not called: each map is counted.
@@ -554,13 +575,23 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
+	## A field with a `null` value (`Err(Null)`) is not written, so that it reads back as no key.
 	encode_record : List(U8), U64, ({ out : List(U8), n : U64 }, ({ out : List(U8), n : U64 }, Str, (List(U8) -> Try(List(U8), err)) -> Try({ out : List(U8), n : U64 }, err)) -> Try({ out : List(U8), n : U64 }, err)) -> Try(List(U8), err)
 	encode_record = |out, count, write_fields| {
 		start = out.len()
 		done = write_fields(
 			{ out: put_head_wide(out, 5, count), n: 0 },
 			|c, name, write_value| {
-				Ok({ out: write_value(put_text(c.out, name))?, n: c.n + 1 })
+				key_start = c.out.len()
+				keyed = put_text(c.out, name)
+				value_start = keyed.len()
+				written = write_value(keyed)?
+				if written.len() == value_start + 1 and written.last() == Ok(0xf6) {
+					# A null value (`Err(Null)`) is the same as no key: the entry is not written.
+					Ok({ out: written.take_first(key_start), n: c.n })
+				} else {
+					Ok({ out: written, n: c.n + 1 })
+				}
 			},
 		)?
 		Ok(patch_count(done.out, start, done.n))

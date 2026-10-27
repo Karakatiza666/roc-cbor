@@ -9,7 +9,7 @@ import pkg.Cbor
 # L1 target: Cbor.parse, Cbor.parse_camel, Cbor.parse_with and Cbor.path_at never crash, for any
 # bytes and several target types.
 
-Row : { id : U64, name : Str, tags : List(Str), cells : List(List(I64)), note : Try(Str, [Null]), extra ?: Bool }
+Row : { id : U64, name : Str, tags : List(Str), cells : List(List(I64)), note : Try(Str, [Missing]), flag : Bool, extra ?: Bool }
 
 ## The error position is in the input, or at its end.
 in_input : Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]), U64 -> Bool
@@ -33,6 +33,8 @@ test! = |bytes| {
 	text = Cbor.parse(bytes)
 	nullable : Try(Try(U64, [Null]), _)
 	nullable = Cbor.parse(bytes)
+	cells : Try(List((Bool, Try(I64, [Null]))), _)
+	cells = Cbor.parse(bytes)
 	raw : Try(Cbor.Bytes, _)
 	raw = Cbor.parse(bytes)
 	small : Try(List(U8), _)
@@ -47,7 +49,7 @@ test! = |bytes| {
 	text_row = Cbor.parse_with(bytes, { fields: Camel, int_from_text: Bool.True })
 	text_ints : Try(List(I8), _)
 	text_ints = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
-	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(raw, len) and in_input(small, len) and in_input(dec, len) and in_input(decs, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
+	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(cells, len) and in_input(raw, len) and in_input(small, len) and in_input(dec, len) and in_input(decs, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
 	if !ok {
 		crash "error position past the end of the input"
 	}

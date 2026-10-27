@@ -17,6 +17,7 @@ You give a Roc type. The compiler derives the reader and the writer. You do not 
 
 Add the package to the header with its release URL. The release notes of each
 [release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.2.1 (section "Changes").
+The next release is 0.2.2: it changes how a `Bool` and a `null` read (section "SQL rows").
 
 ```roc
 app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.2.1/9jD8bxEKhNu6CzBKej1nA1hzymTedJsfhiGgiMPGA1mu.tar.zst" }
@@ -85,6 +86,39 @@ expect Cbor.path_at(bytes, 12) == Ok([Index(0), Key("id")])
 `path_at` gives `Err(NotFound)` when no item starts at the position (a map key, or a position in the middle of an item), or when the bytes before it are not valid.
 The path of the root item is `[]`.
 
+### SQL rows
+
+A SQL database (SQLite, Cloudflare D1, and many others) has no boolean type, and a nullable column gives NULL.
+A peer that sends a row as a CBOR map gives the integers 0 and 1 for a boolean column, and `null` for a NULL.
+Since 0.2.2, a row reads into a natural Roc record:
+
+```roc
+# {"name": "a", "note": null, "active": 1}
+Row : { name : Str, note ?: Str, active : Bool }
+
+row : Try(Row, _)
+row = Cbor.parse(bytes)
+# Ok: name is "a", note is absent (row.?note is Err(MissingField)), active is Bool.True
+```
+
+| Rule | Read | Write | Reason |
+| --- | --- | --- | --- |
+| B1. `Bool` | `false`, `true`, and the integers 0 and 1. The integer rules of the table "Profile" apply (any argument width; a float 0.0 or 1.0 also reads). Another integer is an error at the item. Text (`"1"`) is an error, also with `int_from_text`. | `false`, `true` | SQLite has no boolean: it gives 0 and 1. Other integers are an error, because 2 or -1 is not a boolean, and a silent `true` hides a bad column. The writer keeps the CBOR booleans: they are the exact form, and a JS peer gets a JS boolean. |
+| N1. A `null` or `undefined` value in a map read as a record | The same as no key. The entry is skipped. | | One model: null means no value, and in a map no value is no key. A nullable column is naturally an optional field (`?:`) or a `Try(a, [Missing])` field. |
+| N2. An optional field (`x ?: a`) | No key or `null`: absent (`.?x` is `Err(MissingField)`) | Absent: no key | Rule N1 |
+| N3. A `Try(a, [Missing])` field | No key or `null`: `Err(Missing)` | `Err(Missing)`: no key | Rule N1 |
+| N4. A required field (`x : a`, also `x : Try(a, [Null])`) | No key or `null`: `Err(MissingRequiredField("x"))` | | The error names the field. A `Try(a, [Null])` field is required for the compiler (see "Why `Try(a, [Null])` is not for a record field"). |
+| N5. `Err(Null)` in a record field | | No key. The head of the map has the real count. | The writer and the reader have the same model: a record that `Cbor.encode` writes reads back. `Err(Null)` reads back as `Err(Missing)` or an absent optional field. |
+| N6. A `null` outside a record: a list item, a tuple item, the root, a `Dict` value, a tag payload | `Err(Null)` of a `Try(a, [Null])`. Another type: an error at the `null` (`InvalidCbor(pos)`, and `Cbor.path_at(bytes, pos)` gives the path). | `Err(Null)`: `null` | An item of an array has a position, so it cannot be absent. A `Dict` keeps each entry. |
+
+Why `Try(a, [Null])` is not for a record field:
+
+| Fact | Effect |
+| --- | --- |
+| The derived parser of a record reads a key, then gives the value to the parser of the field. The format sees the key, but not the type of the field. | The format decides for each `null` in a map, the same way for each field type. |
+| The compiler keeps `Null` and `Missing` apart. `Try(a, [Null, Missing])` does not compile. A `Try(a, [Null])` field is required, and an optional field or a `Try(a, [Missing])` field reads its value with the parser of `a`, which does not see a `null`. | A `null` can be absent (for `?:` and `[Missing]`) or `Err(Null)` (for `[Null]`), not both. |
+| A row of a SQL table has the same keys each time, so null and no key tell the same thing. | Rule N1: absent. A record field that must tell `null` from no key is not possible. Use an optional field. |
+
 ### Readable and Writable
 
 `Cbor.Readable(errs)` and `Cbor.Writable` are short `where` aliases. `Cbor.Parseable` and `Cbor.Encodable` stay.
@@ -111,6 +145,18 @@ A form with no `errs` is not possible: the compiler does not allow `..` in an al
 `tests/aliases.roc` has generic helpers for a record, `List(Row)`, `List(I64)`, `Cbor.Bytes` and a type of your own with a closed reader.
 
 ## Changes
+
+### 0.2.2
+
+This release changes two behaviors. There is no option for the old behavior (section "SQL rows" gives the reasons).
+
+| Change | Before (0.2.1) | Now | Reason |
+| --- | --- | --- | --- |
+| A `Bool` reads the integers 0 and 1 | Only `false` and `true`. `{"a": 0}` into `{ a : Bool }` was `InvalidCbor(3)`. | `false`, `true`, 0 and 1. Another integer is an error. The writer does not change. | A SQL database (SQLite, D1) has no boolean and gives 0 and 1, so a typed row could not have a `Bool` field. |
+| A `null` (or `undefined`) value in a map is no key, when the map is read as a record | A `null` read only into a `Try(a, [Null])` field. Into an optional field or a `Try(a, [Missing])` field it was `InvalidCbor(pos)`. | An optional field is absent and a `Try(a, [Missing])` field is `Err(Missing)`. A required field, also a `Try(a, [Null])` field, is `MissingRequiredField(name)`. | A nullable column is naturally an optional field. The format cannot see the field type when it reads a `null`, so one rule for each `null` in a record is the only consistent rule. |
+| `Err(Null)` in a record field writes no key | `Err(Null)` wrote `null` | No key, and the head has the real count | The writer and the reader have the same model. A record with `Err(Null)` reads back into an optional field or a `Try(a, [Missing])` field. |
+| Migration | | A `Try(a, [Null])` record field: change it to `x ?: a` or `x : Try(a, [Missing])`. A `Try(a, [Null])` item of a list or a tuple, a `Dict` value and the root do not change. | |
+| Tests | | `tests/rows.roc` (45 expects). The fuzz targets have a `Bool` field, a list of `Try(I64, [Null])`, and a property for `Err(Null)` in a record field. | |
 
 ### 0.2.1
 
@@ -139,14 +185,15 @@ First release: the codec protocol, `Cbor.Bytes`, `parse_camel`, `parse_with`, `p
 
 ## Data model
 
-The model is the same as the model of `Json`. A peer that reads JSON sees the same objects.
+The model is the same as the model of `Json`, with two differences for SQL rows (section "SQL rows"): a `Bool` also reads 0 and 1,
+and a `null` value in a map is no key. A peer that reads JSON sees the same objects.
 
 | Roc | CBOR |
 | --- | --- |
 | Record | Map with text keys (major type 5) |
-| Optional field, absent | The key is not in the map. The head of the map has the real count. |
-| `Try(a, [Missing])` field, absent | The key is not in the map |
-| `Try(a, [Null])` | `Ok(x)` is `x`. `Err(Null)` is `null` (`0xf6`). |
+| Optional field, absent | The key is not in the map. The head of the map has the real count. Read: no key, or a `null` value. |
+| `Try(a, [Missing])` field, `Err(Missing)` | The key is not in the map. Read: no key, or a `null` value. |
+| `Try(a, [Null])` | `Ok(x)` is `x`. `Err(Null)` is `null` (`0xf6`), except in a record field: there it is no key (rule N5). |
 | Tag with no payload | Text (major type 3) |
 | Tag with one payload | Map of one entry: the tag name, then the payload |
 | Tag with more payloads | Map of one entry: the tag name, then an array of the payloads |
@@ -154,7 +201,7 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | `Str` | Text (major type 3). The reader checks UTF-8. |
 | `Cbor.Bytes` | Write: byte string (major type 2). Read: byte string or array of integers 0 to 255. |
 | `List(U8)` | Write: array of numbers. Read: byte string or array. |
-| `Bool` | `0xf4`, `0xf5` |
+| `Bool` | Write: `0xf4`, `0xf5`. Read: also the integers 0 and 1. |
 | `U8` to `U64`, `I8` to `I64` | Integer (major types 0 and 1) |
 | `F32`, `F64` | Float (major type 7) |
 | `Dec` | Write: integer when it has no fraction (and fits), else decimal fraction (tag 4, exact). Read: integer, decimal fraction or float. |
@@ -169,7 +216,8 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | Container head | 1, 2, 4 or 8 bytes | 1 byte for 23 items or less, else 3 bytes (65,535 or less), else 5 bytes. So an array of 24 items has a 3 byte head. |
 | Integer | Major types 0 and 1, up to 64 bits. A float with no fraction is also read as an integer when its size is 2^53 - 1 or less (a JS Number). A float of 2^53 or more is an error, because one such float is the rounded value of many integers. With `int_from_text`, also canonical decimal text (section "Options"). | Major types 0 and 1 |
 | Float | f16, f32, f64. An integer is also read as a float. An `F32` reads a finite value outside the F32 range as an error (not as an infinity). | `F64` as f64 (9 bytes, never shortened). `F32` as f32 (5 bytes). |
-| `null`, `undefined` | Both read as `Err(Null)` of a `Try(a, [Null])` | `null` |
+| `null`, `undefined` | Both are the same. In a map read as a record: the entry is skipped, as if the key is not there. In another place: `Err(Null)` of a `Try(a, [Null])`, else an error. | `null`, but not as a value in a map: that entry is not written |
+| Integer read as a `Bool` | 0 is `false`, 1 is `true`, with the integer rules above (also a float 0.0 or 1.0). Another integer is an error. | Not written: a `Bool` writes `false` or `true` |
 | Tag (major type 6) | An error, as a value (a `Dec` reads tag 4, and the tags 2 and 3 of its mantissa). It is skipped in the value of an unknown record field. | Not written |
 | Simple values other than `false`, `true`, `null`, `undefined` | An error | Not written |
 | Map key | Text only | Text only (record field names) |
@@ -213,6 +261,7 @@ Known limits:
 | Expects of the module (132) | `roc test src/main.roc` |
 | RFC 8949 Appendix A (170 expects) | `roc test tests/rfc8949.roc` |
 | `Readable` and `Writable` (5 expects) | `roc test tests/aliases.roc` |
+| SQL rows: `Bool` and `null` (45 expects) | `roc test tests/rows.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
 
@@ -222,8 +271,8 @@ roc-fuzz runs on Linux x86-64 and macOS arm64 only. A failure is saved in `.cach
 
 | Target | Property |
 | --- | --- |
-| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists and `Try` fields, `List(U64)`, `Str`, `Try(U64, [Null])`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
-| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, lists, tuples, tags, `Try(_, [Null])`) |
+| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists, a `Try(a, [Missing])` field, a `Bool` field and an optional field, `List(U64)`, `Str`, `Try(U64, [Null])`, `List((Bool, Try(I64, [Null])))`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
+| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, `Bool`, lists, tuples, tags, `Try(_, [Missing])`, a list of `Try(_, [Null])`). Also: a record with `Err(Null)` in a field reads back with `Err(Missing)` in that field. |
 
 `scripts/bundle.sh` makes `dist/<hash>.tar.zst` and prints its release URL.
 `scripts/test_bundle.sh` runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep`.
@@ -274,7 +323,8 @@ Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repositor
 | `src/Cbor.roc` | The format, its `expect`s and the doc comments |
 | `tests/rfc8949.roc` | The RFC 8949 Appendix A vectors |
 | `tests/aliases.roc` | Generic helpers with `Cbor.Readable` and `Cbor.Writable` |
-| `examples/round_trip.roc` | An app that uses each public item. It runs on the echo host of roc, with no platform. |
+| `tests/rows.roc` | SQL rows: `Bool` from 0 and 1, `null` in a map, in a list and in a tuple, the writer |
+| `examples/round_trip.roc` | An app that uses each public item, and reads a SQL row. It runs on the echo host of roc, with no platform. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |

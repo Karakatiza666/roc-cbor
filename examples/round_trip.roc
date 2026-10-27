@@ -2,6 +2,7 @@ app [] { pkg: "../src/main.roc" }
 
 # Uses each public item of the package: Cbor.encode, Cbor.parse, Cbor.parse_camel,
 # Cbor.parse_with, Cbor.Options, Cbor.path_at, Cbor.Step, Cbor.Bytes, Cbor.Parseable and Cbor.Encodable. CI runs it on the source and on the bundle.
+# Also reads a SQL row: a NULL column into an optional field, a 0 or 1 column into a Bool.
 
 import pkg.Cbor
 
@@ -10,7 +11,7 @@ Pkg : {
 	size : U64,
 	tags : List(Str),
 	digest : Cbor.Bytes,
-	note : Try(Str, [Null]),
+	note ?: Str,
 	license : Try(Str, [Missing]),
 }
 
@@ -40,7 +41,6 @@ main! = |args| {
 		size: 9_007_199_254_740_993 + args.len(),
 		tags: ["cbor", "codec"],
 		digest: Cbor.Bytes.([0xde, 0xad]),
-		note: Err(Null),
 		license: Ok("UPL-1.0"),
 	}
 	bytes = to_cbor(pkg)
@@ -93,6 +93,16 @@ main! = |args| {
 	blob : Try(Cbor.Bytes, _)
 	blob = Cbor.parse([0x82, 0x01, 0x18, 0xff])
 	echo!("blob: ${Str.inspect(blob)} params: ${hex(to_cbor([1, 2]))} ${hex(to_cbor([1.5]))}\n")
+
+	# A SQL row: a NULL column is no key, a boolean column is 0 or 1.
+	# {"name": "a", "note": null, "active": 1}. The `args` keep the value unknown at compile time.
+	sql_row = [0xa3, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x61, 0x61, 0x64, 0x6e, 0x6f, 0x74, 0x65, 0xf6, 0x66, 0x61, 0x63, 0x74, 0x69, 0x76, 0x65, 0x01].concat(List.repeat(0x00, args.len()))
+	row : Try({ name : Str, note ?: Str, active : Bool }, _)
+	row = Cbor.parse(sql_row)
+	match row {
+		Ok(r) => echo!("sql row: name=${r.name} note=${Str.inspect(r.?note)} active=${Str.inspect(r.active)}\n")
+		Err(e) => echo!("sql row: ${Str.inspect(e)}\n")
+	}
 
 	extra : Try(U64, _)
 	extra = Cbor.parse([0x01, 0x02])
