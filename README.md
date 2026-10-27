@@ -16,11 +16,10 @@ You give a Roc type. The compiler derives the reader and the writer. You do not 
 ## Use
 
 Add the package to the header with its release URL. The release notes of each
-[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.2.1 (section "Changes").
-The next release is 0.2.2: it changes how a `Bool` and a `null` read (section "SQL rows").
+[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.2.2 (section "Changes"). It changes how a `Bool` and a `null` read (section "SQL rows").
 
 ```roc
-app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.2.1/9jD8bxEKhNu6CzBKej1nA1hzymTedJsfhiGgiMPGA1mu.tar.zst" }
+app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.2.2/Cn5TmeqTbMewyChxexex2F3izTnMriXRv5ZMLVV3eUYb.tar.zst" }
 
 import cbor.Cbor
 ```
