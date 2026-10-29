@@ -5,6 +5,8 @@ app [] { pkg: "../src/main.roc" }
 # Also the building blocks for a type over a CBOR tag: Cbor.parse_cbor_tag, Cbor.encode_cbor_tag,
 # Cbor.parse_item, Cbor.encode_item, Cbor.peek, Cbor.Kind, Cbor.Value, and the options ignore_tags and dec_from_text.
 # Also reads a SQL row: a NULL column into an optional field, a 0 or 1 column into a Bool.
+# Also reads tag unions of a peer: an internal tag (Cbor.Unions), and tag names in upper snake case
+# (Cbor.parse_union, Cbor.UnionOptions).
 
 import pkg.Cbor
 
@@ -48,6 +50,17 @@ Key := [Number(U64), Name(Str)].{
 			Text => Cbor.parse_str(encoding, state).map_ok(|t| { value: Key.Name(t.value), rest: t.rest })
 			_ => Err(Cbor.invalid_value(encoding, state))
 		}
+}
+
+## An action of a peer in upper snake case, "NOT_FOUND": Cbor.parse_union gives the type its own tag name case.
+Action := [Create, NotFound].{
+	parser_for : Cbor -> (Cbor.State -> Try({ value : Action, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for = |encoding| |state| {
+		options : Cbor.UnionOptions
+		options = { tags: Upper }
+		parsed = Cbor.parse_union(encoding, options, state)?
+		Ok({ value: Action.(parsed.value), rest: parsed.rest })
+	}
 }
 
 ## A function of your own that wraps `Cbor.encode` repeats its constraint.
@@ -157,6 +170,23 @@ main! = |args| {
 	match priced {
 		Ok(p) => echo!("peer row: price=${p.price.to_str()} note=${Str.inspect(p.?note)}\n")
 		Err(e) => echo!("peer row: ${Str.inspect(e)}\n")
+	}
+
+	# A peer with an internal tag: {"action": "NOT_FOUND", "pay": {"kind": "Check", "value": 7}}.
+	notice_bytes = Cbor.encode(
+		Cbor.Value.Map([
+			(Text("action"), Text("NOT_FOUND")),
+			(Text("pay"), Map([(Text("kind"), Text("Check")), (Text("value"), Int(7 + args.len().to_i128()))])),
+		]),
+	)
+	layout : Cbor.Unions
+	layout = Internal({ tag: "kind", content: "value" })
+	notice : Try({ action : Action, pay : [Cash, Check(U64)] }, _)
+	notice = Cbor.parse_with(notice_bytes, { unions: layout })
+	match notice {
+		Ok({ action: Action.NotFound, pay }) => echo!("unions: action=NotFound pay=${Str.inspect(pay)}\n")
+		Ok(_) => echo!("unions: other action\n")
+		Err(e) => echo!("unions: ${Str.inspect(e)}\n")
 	}
 
 	extra : Try(U64, _)

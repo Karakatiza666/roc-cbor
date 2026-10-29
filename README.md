@@ -30,7 +30,10 @@ import cbor.Cbor
 | `Cbor.parse` | `List(U8) -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value. The number in `InvalidCbor` is the byte position of the error. |
 | `Cbor.parse_camel` | the same as `parse` | Read record fields in camelCase: the field `user_id` is read from the key `userId`. |
 | `Cbor.parse_with` | `List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value with options (table "Options") |
-| `Cbor.Options` | `{ fields ?: [Snake, Camel], int_from_text ?: Bool, dec_from_text ?: Bool, ignore_tags ?: List(U64) }` | The options of `parse_with`. Each field is optional: `{}` is the same as `parse`. |
+| `Cbor.Options` | `{ fields ?: [Snake, Camel], int_from_text ?: Bool, dec_from_text ?: Bool, ignore_tags ?: List(U64), unions ?: Cbor.Unions }` | The options of `parse_with`. Each field is optional: `{}` is the same as `parse`. |
+| `Cbor.Unions` | `[External, Internal({ tag : Str, content : Str })]` | The layout of a tag union on read (section "Tag unions") |
+| `Cbor.parse_union` | `Cbor, Cbor.UnionOptions, Cbor.State -> Try({ value : a, rest : Cbor.State }, [InvalidCbor(U64), ..errs])` | In a `parser_for` of your own: read one tag union with its own layout and tag name case |
+| `Cbor.UnionOptions` | `{ unions ?: Cbor.Unions, tags ?: [Exact, Upper, Lower] }` | The options of `parse_union` |
 | `Cbor.path_at` | `List(U8), U64 -> Try(List(Cbor.Step), [NotFound])` | The path to the item that starts at a position, for example the position of `InvalidCbor(pos)` |
 | `Cbor.Step` | `[Index(U64), Key(Str)]` | One step of a path: an array index or a map key |
 | `Cbor.Bytes` | `Cbor.Bytes := List(U8)` | A field that is written as a CBOR byte string. It reads a byte string or an array of integers 0 to 255. `Cbor.Bytes.(list)` or `Cbor.Bytes.from_list(list)` makes one. `bytes.to_list()` gives the list. |
@@ -69,9 +72,9 @@ A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `enc
 
 ### Options
 
-Each field of `Cbor.Options` is optional. An omitted field has its default: `fields` is `Snake`, `int_from_text` and `dec_from_text` are `Bool.False`, `ignore_tags` is `[]`.
+Each field of `Cbor.Options` is optional. An omitted field has its default: `fields` is `Snake`, `int_from_text` and `dec_from_text` are `Bool.False`, `ignore_tags` is `[]`, `unions` is `External`.
 So `{}`, `{ fields: Camel }`, `{ int_from_text: Bool.True }` and the full record all compile.
-A record in a `let` that is not the full record needs the annotation `Cbor.Options` (section "Changes", 0.3.0).
+A record in a `let` that is not the full record needs the annotation `Cbor.Options` (section "Changes", 0.3.0 and 0.4.0).
 
 | Field | Value | Effect |
 | --- | --- | --- |
@@ -84,6 +87,8 @@ A record in a `let` that is not the full record needs the annotation `Cbor.Optio
 | | `Bool.True` | A `Dec` also reads text in the number form of JSON: `-?(0\|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`, exact. `"12.50"` is 12.5 and `"4E+1"` is 40. More than 18 fraction digits (after the exponent), a value outside the range of a `Dec`, or other text (`01`, `+1`, `1.`, `.5`, spaces) is an error. Other types do not change. |
 | `ignore_tags` | `[]` (default) | A tag is an error, except the tag 4 of a `Dec` and its tags 2 and 3 |
 | | A list of tag numbers | The reader of each type skips a tag of the list before an item, and reads the item. One item can have more than one such tag. So with `[6]` the bytes `c6 f6` are `null`: no key in a record, `Err(Null)` of a `Try(a, [Null])`. A map key does not skip tags. `Cbor.peek`, `Cbor.parse_cbor_tag` and `Cbor.Value` see each tag. |
+| `unions` | `External` (default) | A tag union is text, or a map of one entry: `{ "Card": payload }` (table "Data model") |
+| | `Internal({ tag, content })` | A tag union is text, or a map with the tag name at the key `tag` (section "Tag unions") |
 
 `int_from_text` is for a peer that sends a 64-bit integer as text, for example a SQL `CAST(id AS TEXT)`.
 `dec_from_text` is for a peer that sends a decimal number as text, for example a SQL `NUMERIC`, or a decimal in a tag of the peer.
@@ -216,7 +221,102 @@ Uuid := List(U8).{
 | Profile | The same as for the other types: definite lengths only. An indefinite length, a break (`ff`), a reserved head and `f8` below 32 are errors. |
 | In a record | A `null` value in a map is still no key (rule N1): a required `Cbor.Value` field is `MissingRequiredField`. A `List(Cbor.Value)` keeps each `Null`. |
 
+### Tag unions
+
+The writer and the default reader use the external form of `Json`: `{ "Card": { "last4": "4242" } }`.
+Many peers write a tag union with an internal tag: the tag name is the value of a key of the map, `{ "kind": "Card", "last4": "4242" }`.
+Since 0.4.0, the option `unions` reads this form. It is read only: `Cbor.encode` writes the external form (table "Limits of tag unions").
+
+```roc
+Pay : [Cash, Card({ last4 : Str }), Check(U64), Wire(Str, U64)]
+
+Row : { id : Str, pay : Pay }
+
+rows : Try(List(Row), _)
+rows = Cbor.parse_with(bytes, { unions: Internal({ tag: "kind", content: "value" }) })
+```
+
+| Payloads | `External` (default) | `Internal({ tag: "kind", content: "value" })` |
+| --- | --- | --- |
+| 0 | `"Cash"` | `"Cash"`, or `{ "kind": "Cash" }` |
+| 1, a record | `{ "Card": { "last4": "4242" } }` | `{ "kind": "Card", "last4": "4242" }`: the map itself |
+| 1, another type | `{ "Check": 7 }` | `{ "kind": "Check", "value": 7 }`: the item at the content key |
+| 2 or more | `{ "Wire": ["eu", 9] }` | `{ "kind": "Wire", "value": ["eu", 9] }`: an array at the content key |
+
+| Rule | Value |
+| --- | --- |
+| U1. The type of the payload decides | The reader of the payload picks the form, so the same bytes `{ "kind": "Check", "value": 7 }` read as `Check({ value: 7 })` and as `Check(7)`. A record (also a type of your own with a derived record reader) reads the map itself. Each other type reads the item at the content key: also a `Dict`, a list, a tuple, a union, `Cbor.Value`, and a type of your own that starts with `Cbor.peek` or `Cbor.parse_cbor_tag`. |
+| U2. One layout for each parse | `Internal` does not read the external form `{ "Card": .. }` of a tag with payloads. A tag with no payload reads as text, or as a map with the tag key. |
+| U3. Keys | The keys can be in any order. Other keys are skipped. When a key is in the map two times, the first one counts. Keys are text (table "Profile"). |
+| U4. A record payload and the tag key | The record reads the tag key as an unknown key, and skips it. A field of the record with the name of the tag key reads the tag name: do not use that name for a field. |
+| U5. Errors | No tag key, a key that is not text, or a tag name that the type does not have: an error at the map. A tag key with a value that is not text: an error at the value. No content key for one payload that is not a record: an error at the map. The content of 2 or more payloads that is not an array of that length: an error at the content. |
+| U6. The other options | `fields`, `int_from_text`, `dec_from_text` and `ignore_tags` apply in the payloads too. A tag of `ignore_tags` before the map and before the content is skipped. |
+| U7. Nested unions | Each union of the parse has the layout: also a union in a payload, in a list or in a record |
+
+#### One union type with its own options
+
+`Cbor.parse_union` reads one tag union with the options of `Cbor.UnionOptions`, in the `parser_for` of a type of your own.
+The payloads of the union, and the other unions of the parse, keep the options of the parse.
+An omitted `unions` keeps the layout of the parse. An omitted `tags` is `Exact`.
+
+```roc
+## The actions of a peer: "CREATE", "UPDATE", "NOT_FOUND".
+Action := [Create, Update, NotFound].{
+	is_eq : _
+
+	parser_for : Cbor -> (Cbor.State -> Try({ value : Action, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for = |encoding| |state| {
+		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
+		Ok({ value: Action.(parsed.value), rest: parsed.rest })
+	}
+}
+
+## The operations of a patch: { "op": "add", "path": "/a", "value": 1 }.
+Op := [Add({ path : Str, value : I64 }), Remove({ path : Str })].{
+	parser_for : Cbor -> (Cbor.State -> Try({ value : Op, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for = |encoding| |state| {
+		parsed = Cbor.parse_union(encoding, { unions: Internal({ tag: "op", content: "value" }), tags: Lower }, state)?
+		Ok({ value: Op.(parsed.value), rest: parsed.rest })
+	}
+}
+```
+
+| `tags` | Wire name | Example | Error |
+| --- | --- | --- | --- |
+| `Exact` (default) | The Roc tag name | `NotFound` is `NotFound` | |
+| `Upper` | Upper snake case: words of `A` to `Z` and `0` to `9`, with one `_` between two words | `NOT_FOUND` is `NotFound`, `V2` is `V2` | A small letter, two `_` together, a `_` at the start or at the end, another character, empty text |
+| `Lower` | Lower snake case: words of `a` to `z` and `0` to `9`, with one `_` between two words | `not_found` is `NotFound`, `add` is `Add` | The same, with a capital letter in place of a small letter |
+
+There is no tag name case for all unions of a parse: one case rule for all unions changes each union, also a union with names in another case.
+So the case is an option of one type. A structural union (`Pay` above) has no `parser_for` of its own: give it a nominal type to give it options.
+When the type of `parse_union` is not a tag union, the options have no effect.
+
+#### Limits of tag unions
+
+| Limit | Reason | Path |
+| --- | --- | --- |
+| The writer writes the external form and the Roc tag names only. `Cbor.encode` does not write an internal tag or a tag name in another case. | The codec protocol gives `encode_tag` the Roc tag name and no encoding value (the same reason as for "There is no camelCase writer"), so the format cannot rename a tag or change its layout. | A hook of the compiler, `rename_tag : encoding, Str -> Str`, or the encoding value as an argument of `encode_tag`. Until then, an `encoder_for` of your own can write another form, for example with `Cbor.encode_item` of a `Cbor.Value`. |
+| An exact name for one tag (serde `rename`) | Roc has no attributes on tags | A `parser_for` of your own that reads a `Str` and matches it |
+| A union with no tag (serde `untagged`) | The protocol gives the format no list of the tags, and a parse cannot go back | A `parser_for` of your own with `Cbor.peek` or `Cbor.Value` |
+| A type of your own as the one payload: `Cbor.peek` and `Cbor.parse_cbor_tag` see the item at the content key, and `Cbor.parse_record_start` sees the map itself | The format sees the reader that the payload calls, not the type (rule U1) | A type that reads a record after `Cbor.peek` gives `Map`: as one payload of an internal tag, it reads the item at the content key, then the map of the tag. Put such a type in a record field. |
+
 ## Changes
+
+### 0.4.0
+
+This release adds the internal tag of a tag union on read (section "Tag unions"). The readers of 0.3.0 do not change when the option `unions` is not set.
+
+| Change | Detail |
+| --- | --- |
+| Option `unions` | `Internal({ tag, content })` reads `{ tag: "Card", ..payload }`. `External` (default) is the form of 0.3.0. Read only. |
+| `Cbor.Unions` | The type of the option `unions` |
+| `Cbor.parse_union`, `Cbor.UnionOptions` | In a `parser_for` of your own: one union type with its own layout, and tag names in upper or lower snake case (`tags: Upper`, `tags: Lower`) |
+| `Cbor.peek`, `Cbor.parse_cbor_tag`, `Cbor.Value` | In the map of an internal tag with one payload, they see the item at the content key (rule U1). 0.3.0 had no internal tag, so no read of 0.3.0 changes. |
+| Migration | A `Cbor.Options` record in a `let` with no annotation that has the 4 fields of 0.3.0 (`opts = { fields: Camel, int_from_text: Bool.True, dec_from_text: Bool.False, ignore_tags: [] }`), or a function with no annotation that gives one, does not compile now: the compiler gives "missing method" at the call of `parse_with`. Add the annotation `opts : Cbor.Options`. The cause is the same as in 0.3.0: the full record now has 5 fields. A record literal in the call, and an annotated record, do not change. |
+| Version | 0.4.0, not 0.3.1, because of the migration row: code that compiles with 0.3.0 can fail to compile |
+| Writer | No change: `Cbor.encode` writes the external form (table "Limits of tag unions") |
+| Tests | `tests/unions.roc` (41 expects). The new fuzz target `fuzz/unions.roc`. `fuzz/parse_never_crashes.roc` has a recursive union with a record, a `Dict` and a `Cbor.Value` payload, and a type with `Cbor.parse_union`, with `unions: Internal`. `fuzz/cbor.dict` has the keys and the tag names of the targets. |
+
 
 ### 0.3.0
 
@@ -282,7 +382,7 @@ and a `null` value in a map is no key. A peer that reads JSON sees the same obje
 | `Try(a, [Missing])` field, `Err(Missing)` | The key is not in the map. Read: no key, or a `null` value. |
 | `Try(a, [Null])` | `Ok(x)` is `x`. `Err(Null)` is `null` (`0xf6`), except in a record field: there it is no key (rule N5). |
 | Tag with no payload | Text (major type 3) |
-| Tag with one payload | Map of one entry: the tag name, then the payload |
+| Tag with one payload | Map of one entry: the tag name, then the payload. Read with `unions: Internal`: section "Tag unions". |
 | Tag with more payloads | Map of one entry: the tag name, then an array of the payloads |
 | List, tuple | Array (major type 4). A tuple must have the exact length. |
 | `Str` | Text (major type 3). The reader checks UTF-8. |
@@ -351,6 +451,7 @@ Known limits:
 | `Readable` and `Writable` (5 expects) | `roc test tests/aliases.roc` |
 | SQL rows: `Bool` and `null` (45 expects) | `roc test tests/rows.roc` |
 | Tags and dynamic values (92 expects) | `roc test tests/tags.roc` |
+| Tag unions: internal tags and `parse_union` (41 expects) | `roc test tests/unions.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
 
@@ -360,7 +461,8 @@ roc-fuzz runs on Linux x86-64 and macOS arm64 only. A failure is saved in `.cach
 
 | Target | Property |
 | --- | --- |
-| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists, a `Try(a, [Missing])` field, a `Bool` field and an optional field, `List(U64)`, `Str`, `Try(U64, [Null])`, `List((Bool, Try(I64, [Null])))`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`, `Cbor.Value`, and a record with `Cbor.Value` fields. Also with `ignore_tags` and `dec_from_text`. The position in `InvalidCbor` is in the input. A `Cbor.Value` that reads, reads back from its own bytes. |
+| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists, a `Try(a, [Missing])` field, a `Bool` field and an optional field, `List(U64)`, `Str`, `Try(U64, [Null])`, `List((Bool, Try(I64, [Null])))`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`, `Cbor.Value`, and a record with `Cbor.Value` fields. Also with `ignore_tags` and `dec_from_text`, and with `unions: Internal` into a recursive union with a record, a `Dict` and a `Cbor.Value` payload, and a type with `Cbor.parse_union`. The position in `InvalidCbor` is in the input. A `Cbor.Value` that reads, reads back from its own bytes. |
+| `fuzz/unions.roc` | For random values of tag unions with each kind of payload (none, a record, one item, two items, a union, a list of unions), and a type with `Cbor.parse_union` and `tags: Upper`: the external form (the form of the writer) reads back with `Cbor.parse`, and the internal form reads back with `unions: Internal`. The keys of the internal form are random: 3 names for the tag key, 3 for the content key, the tag key first or last, and another key or not. |
 | `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, `Bool`, lists, tuples, tags, `Try(_, [Missing])`, a list of `Try(_, [Null])`, a list of `Cbor.Value` of each kind to a depth of 3). Also: a record with `Err(Null)` in a field reads back with `Err(Missing)` in that field. The bytes with a tag 6 before each value (not a map key, not in a tag, not in a `Cbor.Value`) read the same item with `ignore_tags: [6]`. |
 
 `scripts/bundle.sh` makes `dist/<hash>.tar.zst` and prints its release URL.
@@ -414,7 +516,8 @@ Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repositor
 | `tests/aliases.roc` | Generic helpers with `Cbor.Readable` and `Cbor.Writable` |
 | `tests/rows.roc` | SQL rows: `Bool` from 0 and 1, `null` in a map, in a list and in a tuple, the writer |
 | `tests/tags.roc` | Types of an app over tags, `Cbor.peek`, `Cbor.Value`, the options `ignore_tags` and `dec_from_text` |
-| `examples/round_trip.roc` | An app that uses each public item, reads a SQL row, and reads a type over a tag. It runs on the echo host of roc, with no platform. |
+| `tests/unions.roc` | Tag unions: the option `unions`, each payload form, the errors, `Cbor.parse_union` and the tag name cases |
+| `examples/round_trip.roc` | An app that uses each public item, reads a SQL row, reads a type over a tag, and reads tag unions of a peer. It runs on the echo host of roc, with no platform. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |

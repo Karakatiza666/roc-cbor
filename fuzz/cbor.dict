@@ -1,5 +1,5 @@
 # CBOR tokens for libFuzzer: each major type with a 1, 2, 4 and 8 byte argument of all ones,
-# and the simple values. scripts/fuzz.sh passes it to each target.
+# the simple values, and the union keys and tag names of the targets. scripts/fuzz.sh passes it to each target.
 uint_1="\x18\xff"
 uint_2="\x19\xff\xff"
 uint_4="\x1a\xff\xff\xff\xff"
@@ -37,3 +37,12 @@ true="\xf5"
 null="\xf6"
 undefined="\xf7"
 break="\xff"
+# The keys and the tag names of the union targets of parse_never_crashes, as CBOR text.
+key_kind="\x64kind"
+key_value="\x65value"
+key_op="\x62op"
+tag_nest="\x64Nest"
+tag_many="\x64Many"
+tag_box="\x63Box"
+tag_counts="\x66Counts"
+tag_set_mode="\x68SET_MODE"

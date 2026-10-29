@@ -30,7 +30,21 @@
 ## Tags: a type of your own reads a tag with `parse_cbor_tag` and `parse_item` in its `parser_for`, and writes one with
 ## `encode_cbor_tag` and `encode_item`. `peek` gives the kind of the next item. `Cbor.Value` is any item, with its tags.
 ## The option `ignore_tags` skips the tags of a list before an item, and `dec_from_text` reads a `Dec` from decimal text.
-Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, ignore_tags : List(U64) }.{
+##
+## Tag unions: the option `unions` reads an internal tag, `{ "kind": "Card", "last4": "4242" }` (read only).
+## `parse_union` in a `parser_for` of your own gives the options of one union type, also a case for its tag names.
+Cbor :: {
+	fields : [Snake, Camel],
+	int_from_text : Bool,
+	dec_from_text : Bool,
+	ignore_tags : List(U64),
+	# The layout of each tag union of the parse.
+	unions : [External, Internal({ tag : Str, content : Str })],
+	# In the map of an internal tag with one payload: a reader that is not a record reads the item at `key`.
+	content : { at : U64, key : Str },
+	# The options of the one union at `at`, from `parse_union`.
+	next : { at : U64, unions : [External, Internal({ tag : Str, content : Str })], tags : [Exact, Upper, Lower] },
+}.{
 
 	## The options of `parse_with`. Each field is optional: `{}` is the same as `parse`.
 	##
@@ -40,7 +54,33 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## | `int_from_text` | `Bool.False` | `Bool.True`: an integer type (`U8` to `I64`) also reads text that is a canonical decimal integer in its range: `0`, or `-?[1-9][0-9]*`. Other text is an error. |
 	## | `dec_from_text` | `Bool.False` | `Bool.True`: a `Dec` also reads text in the number form of JSON, `-?(0\|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`, exactly. `4E+1` is 40. More than 18 fraction digits, or a value outside the range of a `Dec`, is an error. |
 	## | `ignore_tags` | `[]` | The tag numbers that the readers of the types skip: an item with a tag of the list reads as the item with no tag. So with `[6]`, the bytes `c6 f6` read as `null`. `Cbor.peek`, `Cbor.parse_cbor_tag` and `Cbor.Value` see each tag. |
-	Options : { fields ?: [Snake, Camel], int_from_text ?: Bool, dec_from_text ?: Bool, ignore_tags ?: List(U64) }
+	## | `unions` | `External` | The layout of a tag union (`Cbor.Unions`). `External`: `{ "Card": payload }`. `Internal({ tag, content })`: `{ tag: "Card", ..payload }`. |
+	Options : { fields ?: [Snake, Camel], int_from_text ?: Bool, dec_from_text ?: Bool, ignore_tags ?: List(U64), unions ?: Cbor.Unions }
+
+	## The layout of a tag union on read. The writer always writes `External`.
+	##
+	## | Payloads | `External` (default) | `Internal({ tag: "kind", content: "value" })` |
+	## | --- | --- | --- |
+	## | 0 | `"Cash"` | `"Cash"`, or `{ "kind": "Cash" }` |
+	## | 1, a record | `{ "Card": { "last4": "4242" } }` | `{ "kind": "Card", "last4": "4242" }`: the map itself |
+	## | 1, another type | `{ "Check": 7 }` | `{ "kind": "Check", "value": 7 }` |
+	## | 2 or more | `{ "Wire": ["eu", 9] }` | `{ "kind": "Wire", "value": ["eu", 9] }` |
+	##
+	## The type of the payload decides between "a record" and "another type", so the same bytes read
+	## `Card({ value: 7 })` and `Check(7)`. A `Dict` is another type. The keys of the map can be in any
+	## order, and other keys are skipped. `Internal` does not read the `External` form of a tag with payloads.
+	Unions : [External, Internal({ tag : Str, content : Str })]
+
+	## The options of one tag union type, for `Cbor.parse_union`. An omitted field keeps the value of
+	## the parse (`unions`), or is `Exact` (`tags`).
+	##
+	## | Field | Value | Effect |
+	## | --- | --- | --- |
+	## | `unions` | `Cbor.Unions` | The layout of this union |
+	## | `tags` | `Exact` | The wire name is the Roc tag name: `NotFound` |
+	## | | `Upper` | The wire name is in upper snake case: `NOT_FOUND` reads as `NotFound`. `NotFound` and `NOT__FOUND` are errors. |
+	## | | `Lower` | The wire name is in lower snake case: `not_found` reads as `NotFound`, `add` as `Add` |
+	UnionOptions : { unions ?: Cbor.Unions, tags ?: [Exact, Upper, Lower] }
 
 	## One step of the path that `path_at` gives: an array index or a map key.
 	Step : [Index(U64), Key(Str)]
@@ -99,7 +139,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 		parser_for : Cbor -> (Cbor.State -> Try({ value : Cbor.Bytes, rest : Cbor.State }, [InvalidCbor(U64)]))
 		parser_for = |encoding| {
 			|tagged| {
-				state = untag(encoding, tagged)
+				state = untag(encoding, tagged)?
 				h = head(state)?
 				if h.major == 2 {
 					parsed = Cbor.parse_bytes(encoding, state)?
@@ -107,7 +147,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 				} else if h.major == 4 and h.arg <= state.bytes.len() - h.next {
 					# An array: each item is one byte, 0 to 255. Another item is an error at the item.
 					# Text never reads as an item, also with int_from_text.
-					strict = Cbor.{ fields: encoding.fields, int_from_text: Bool.False, dec_from_text: Bool.False, ignore_tags: encoding.ignore_tags }
+					strict = Cbor.{ fields: encoding.fields, int_from_text: Bool.False, dec_from_text: Bool.False, ignore_tags: encoding.ignore_tags, unions: External, content: no_content, next: no_next }
 					var $s = at(state, h.next)
 					var $out = List.with_capacity(h.arg)
 					for _ in (0.U64).until(h.arg) {
@@ -183,9 +223,10 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 		to_hash = |value, hasher| hasher.write_bytes(Cbor.encode(value))
 
 		## Reads any one item. The option `ignore_tags` does not apply: each tag stays. Deep nesting does not
-		## overflow the stack (a loop, not a recursion).
+		## overflow the stack (a loop, not a recursion). As the one payload of an internal tag (`Cbor.Unions`),
+		## it reads the item at the content key.
 		parser_for : Cbor -> (Cbor.State -> Try({ value : Cbor.Value, rest : Cbor.State }, [InvalidCbor(U64)]))
-		parser_for = |_| |state| read_value(state)
+		parser_for = |encoding| |state| read_value(at_content(encoding, state)?)
 
 		## Writes the item, with the shortest heads (also for the counts of arrays and maps).
 		encoder_for : Cbor -> (Cbor.Value, List(U8) -> Try(List(U8), err))
@@ -220,6 +261,9 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 				int_from_text: options.?int_from_text ?? Bool.False,
 				dec_from_text: options.?dec_from_text ?? Bool.False,
 				ignore_tags: options.?ignore_tags ?? [],
+				unions: options.?unions ?? External,
+				content: no_content,
+				next: no_next,
 			},
 		)
 		parsed = parse_shape(Cbor.State.{ bytes, pos: 0, raw: 0 })?
@@ -265,9 +309,11 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 
 	## The kind of the item at `state` (`Cbor.Kind`), with no read: use it to pick the reader.
 	## The option `ignore_tags` does not apply: a tag gives `Tag(number)`.
+	## As the one payload of an internal tag (`Cbor.Unions`), it gives the kind of the item at the content key.
 	## An indefinite length, a reserved head, or no more bytes is an error.
 	peek : Cbor, Cbor.State -> Try(Cbor.Kind, [InvalidCbor(U64)])
-	peek = |_, state| {
+	peek = |encoding, tagged| {
+		state = at_content(encoding, tagged)?
 		h = head(state)?
 		match h.major {
 			0 => Ok(Int)
@@ -291,6 +337,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 
 	## Reads the head of a tag (major type 6): its number. `rest` is at the tagged item, which you read next
 	## with its reader (`Cbor.parse_item`). Another item is an error. The option `ignore_tags` does not apply.
+	## As the one payload of an internal tag (`Cbor.Unions`), it reads the item at the content key.
 	##
 	## ```roc
 	## Uuid := List(U8).{
@@ -305,7 +352,8 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## }
 	## ```
 	parse_cbor_tag : Cbor, Cbor.State -> Try({ value : U64, rest : Cbor.State }, [InvalidCbor(U64)])
-	parse_cbor_tag = |_, state| {
+	parse_cbor_tag = |encoding, tagged| {
+		state = at_content(encoding, tagged)?
 		h = head(state)?
 		if (h.major == 6) Ok({ value: h.arg, rest: at(state, h.next) }) else Err(InvalidCbor(state.pos))
 	}
@@ -337,12 +385,12 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_str : Cbor, Cbor.State -> Try({ value : Str, rest : Cbor.State }, [InvalidCbor(U64)])
-	parse_str = |cbor, state| text(untag(cbor, state))
+	parse_str = |cbor, state| text(untag(cbor, state)?)
 
 	## A byte string (major type 2) only. `Cbor.Bytes` calls it.
 	parse_bytes : Cbor, Cbor.State -> Try({ value : List(U8), rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_bytes = |cbor, tagged| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		h = head(state)?
 		if h.major != 2 or h.arg > state.bytes.len() - h.next {
 			return Err(InvalidCbor(state.pos))
@@ -356,12 +404,12 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## Another integer is an error.
 	parse_bool : Cbor, Cbor.State -> Try({ value : Bool, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_bool = |cbor, tagged| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
 			Ok(0xf4) => Ok({ value: Bool.False, rest: at(state, state.pos + 1) })
 			Ok(0xf5) => Ok({ value: Bool.True, rest: at(state, state.pos + 1) })
 			Ok(_) =>
-				match int(Cbor.{ fields: Snake, int_from_text: Bool.False, dec_from_text: Bool.False, ignore_tags: cbor.ignore_tags }, state) {
+				match int(Cbor.{ fields: Snake, int_from_text: Bool.False, dec_from_text: Bool.False, ignore_tags: cbor.ignore_tags, unions: External, content: no_content, next: no_next }, state) {
 					Ok({ value: 0, rest }) => Ok({ value: Bool.False, rest })
 					Ok({ value: 1, rest }) => Ok({ value: Bool.True, rest })
 					_ => Err(InvalidCbor(state.pos))
@@ -375,7 +423,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## With the option `ignore_tags`, a tag of the list before the `null` is also read.
 	parse_null : Cbor, Cbor.State -> Try(Cbor.State, [InvalidCbor(U64)])
 	parse_null = |cbor, tagged| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
 			Ok(0xf6) | Ok(0xf7) => Ok(at(state, state.pos + 1))
 			_ => Err(InvalidCbor(state.pos))
@@ -446,12 +494,12 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_f64 : Cbor, Cbor.State -> Try({ value : F64, rest : Cbor.State }, [InvalidCbor(U64)])
-	parse_f64 = |cbor, state| float(untag(cbor, state))
+	parse_f64 = |cbor, state| float(untag(cbor, state)?)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_f32 : Cbor, Cbor.State -> Try({ value : F32, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_f32 = |cbor, tagged| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		f = float(state)?
 		# A finite value outside the F32 range is an error, not an infinity.
 		if f.value.is_finite() and f.value.abs() > F32.highest.to_f64() {
@@ -471,7 +519,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## then text in the number form of JSON (`-1.25`, `4E+1`) reads exactly (see `Cbor.Options`).
 	parse_dec : Cbor, Cbor.State -> Try({ value : Dec, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_dec = |cbor, tagged| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		h = head(state)?
 		match h.major {
 			0 => Ok({ value: Dec.from_attos(h.arg.to_i128() * dec_scale), rest: at(state, h.next) })
@@ -503,7 +551,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_list_start : Cbor, Cbor.State -> Try([Counted({ len : U64, rest : Cbor.State }), Uncounted(Cbor.State)], [InvalidCbor(U64)])
 	parse_list_start = |cbor, tagged| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		h = head(state)?
 		if h.arg > state.bytes.len() - h.next {
 			# Each item is 1 byte or more: a count that does not fit is an error, not an allocation.
@@ -527,7 +575,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_tuple_start : Cbor, Cbor.State, U64 -> Try(Cbor.State, [InvalidCbor(U64)])
 	parse_tuple_start = |cbor, tagged, len| {
-		state = untag(cbor, tagged)
+		state = untag(cbor, tagged)?
 		h = head(state)?
 		if (h.major == 4 and h.arg == len) Ok(at(state, h.next)) else Err(InvalidCbor(state.pos))
 	}
@@ -541,17 +589,9 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	parse_tuple_end = |_, state, _| Ok(state)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
+	## A record that is the one payload of an internal tag reads the map of the tag itself.
 	parse_record_start : Cbor, Cbor.State -> Try([Counted({ len : U64, rest : Cbor.State }), Uncounted(Cbor.State)], [InvalidCbor(U64)])
-	parse_record_start = |cbor, tagged| {
-		state = untag(cbor, tagged)
-		h = head(state)?
-		# Each entry is 2 bytes or more.
-		if h.major == 5 and h.arg <= (state.bytes.len() - h.next) // 2 {
-			Ok(Counted({ len: h.arg, rest: at(state, h.next) }))
-		} else {
-			Err(InvalidCbor(state.pos))
-		}
-	}
+	parse_record_start = |cbor, tagged| map_start(skip_tags(cbor, tagged))
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## A key with a `null` or `undefined` value is skipped: the same as no key.
@@ -570,7 +610,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	)
 	parse_record_field = |cbor, _, state| {
 		key = text(state)?
-		value = untag(cbor, key.rest)
+		value = skip_tags(cbor, key.rest)
 		match value.bytes.get(value.pos) {
 			# A null or undefined value is the same as no key: the entry is skipped.
 			Ok(0xf6) | Ok(0xf7) => Ok(Continue(at(state, value.pos + 1)))
@@ -588,7 +628,9 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_dict_start : Cbor, Cbor.State -> Try([Counted({ len : U64, rest : Cbor.State }), Uncounted(Cbor.State)], [InvalidCbor(U64)])
-	parse_dict_start = |encoding, state| parse_record_start(encoding, state)
+
+	## A `Dict` that is the one payload of an internal tag reads the item at the content key.
+	parse_dict_start = |cbor, tagged| map_start(untag(cbor, tagged)?)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_dict_next : Cbor, Cbor.State -> Try([Entry(Cbor.State), Done(Cbor.State)], [InvalidCbor(U64)])
@@ -610,19 +652,24 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 	parse_key_str : Cbor, Cbor.State -> Try({ value : Str, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_key_str = |_, state| text(state)
 
-	## Text: a tag with no payload. A map of one entry: the tag, then its payload, or an
-	## array of its payloads when it has more than one. The same shapes as `Json`.
+	## Codec protocol: the derived `parser_for` of a tag union calls it. An app calls `Cbor.parse`.
+	## `External` (default): text for a tag with no payload, else a map of one entry: the tag, then its payload,
+	## or an array of its payloads when it has more than one. The same shapes as `Json`.
+	## `Internal({ tag, content })`: text, or a map with the tag name at the key `tag` (see `Cbor.Unions`).
 	parse_tag_union : Cbor, Encoding.ParseTagUnionSpec(a), Cbor.State -> Try({ value : a, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_tag_union = |encoding, spec, tagged| {
-		state = untag(encoding, tagged)
+		state = untag(encoding, tagged)?
+		# The options of this union: from `parse_union` for the item at this position, else from the parse.
+		# Each payload starts at another position, so it gets the options of the parse.
+		(unions, case) = if (encoding.next.at == state.pos) (encoding.next.unions, encoding.next.tags) else (encoding.unions, Exact)
 		h = head(state)?
-		match h.major {
-			3 => {
+		match (h.major, unions) {
+			(3, _) => {
 				name = text(state)?
 				Encoding.ParseTagUnionSpec.parse(
 					spec,
 					{
-						tag: name.value,
+						tag: roc_tag(case, name.value) ? |_| InvalidCbor(state.pos),
 						encoding,
 						state: name.rest,
 						start_payloads: |s, count| if (count == 0) Ok(s) else Err(InvalidCbor(s.pos)),
@@ -632,19 +679,19 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 					},
 				)
 			}
-			5 if h.arg == 1 => {
+			(5, External) if h.arg == 1 => {
 				name = text(at(state, h.next))?
 				Encoding.ParseTagUnionSpec.parse(
 					spec,
 					{
-						tag: name.value,
+						tag: roc_tag(case, name.value) ? |_| InvalidCbor(state.pos),
 						encoding,
 						state: name.rest,
 						start_payloads: |s, count|
 							if count == 1 {
 								Ok(s)
 							} else {
-								payloads = untag(encoding, s)
+								payloads = untag(encoding, s)?
 								t = head(payloads)?
 								if (t.major == 4 and t.arg == count) Ok(at(payloads, t.next)) else Err(InvalidCbor(payloads.pos))
 							},
@@ -654,8 +701,57 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool, dec_from_text : Bool, i
 					},
 				)
 			}
+			(5, Internal(keys)) => {
+				name = text(seek_key(state, keys.tag)?)?
+				end = skip(state)?
+				Encoding.ParseTagUnionSpec.parse(
+					spec,
+					{
+						tag: roc_tag(case, name.value) ? |_| InvalidCbor(state.pos),
+						# One payload: a record reads this map (`parse_record_start`), another reader reads the item at `content`.
+						encoding: with_positions(encoding, { at: state.pos, key: keys.content }, encoding.next),
+						state,
+						start_payloads: |s, count|
+							if count == 0 {
+								Ok(end)
+							} else if count == 1 {
+								Ok(s)
+							} else {
+								payloads = untag(encoding, seek_key(state, keys.content)?)?
+								t = head(payloads)?
+								if (t.major == 4 and t.arg == count) Ok(at(payloads, t.next)) else Err(InvalidCbor(payloads.pos))
+							},
+						next_payload: |s, _, _| Ok(s),
+						finish_payloads: |_, _| Ok(end),
+						missing: InvalidCbor(state.pos),
+					},
+				)
+			}
 			_ => Err(InvalidCbor(state.pos))
 		}
+	}
+
+	## Reads one tag union of the type `a` at `state`, with `options` (`Cbor.UnionOptions`) for this union only.
+	## Its payloads, and the other unions of the parse, keep the options of the parse. Use it in the `parser_for`
+	## of a type of your own over a tag union, so that the type has its own layout and case.
+	##
+	## ```roc
+	## Action := [Create, Update, NotFound].{
+	##     parser_for = |encoding| |state| {
+	##         parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
+	##         Ok({ value: Action.(parsed.value), rest: parsed.rest })
+	##     }
+	## }
+	## ```
+	##
+	## When `a` is not a tag union, the options have no effect.
+	parse_union : Cbor, Cbor.UnionOptions, Cbor.State -> Try({ value : a, rest : Cbor.State }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_union = |encoding, options, tagged| {
+		state = untag(encoding, tagged)?
+		next = { at: state.pos, unions: options.?unions ?? encoding.unions, tags: options.?tags ?? Exact }
+		Shape : a
+		parse_shape = Shape.parser_for(with_positions(encoding, encoding.content, next))
+		parse_shape(state)
 	}
 
 	# Encode. A container header gets the width of the declared count, and the module writes
@@ -901,12 +997,103 @@ dec_scale = 1_000_000_000_000_000_000
 
 ## The options of `parse` and `encode`.
 plain : Cbor
-plain = Cbor.{ fields: Snake, int_from_text: Bool.False, dec_from_text: Bool.False, ignore_tags: [] }
+plain = Cbor.{ fields: Snake, int_from_text: Bool.False, dec_from_text: Bool.False, ignore_tags: [], unions: External, content: no_content, next: no_next }
+
+## No position: the start of no item.
+no_pos : U64
+no_pos = U64.highest
+
+no_content : { at : U64, key : Str }
+no_content = { at: no_pos, key: "" }
+
+no_next : { at : U64, unions : Cbor.Unions, tags : [Exact, Upper, Lower] }
+no_next = { at: no_pos, unions: External, tags: Exact }
+
+## `cbor` with other `content` and `next`.
+with_positions : Cbor, { at : U64, key : Str }, { at : U64, unions : Cbor.Unions, tags : [Exact, Upper, Lower] } -> Cbor
+with_positions = |cbor, content, next| Cbor.{ fields: cbor.fields, int_from_text: cbor.int_from_text, dec_from_text: cbor.dec_from_text, ignore_tags: cbor.ignore_tags, unions: cbor.unions, content, next }
+
+## The item that the reader of a type reads at `state`: the item at the content key when `state` is at the map
+## of an internal tag with one payload (`at_content`), then with no tag of the option `ignore_tags` (`skip_tags`).
+untag : Cbor, Cbor.State -> Try(Cbor.State, [InvalidCbor(U64)])
+untag = |cbor, state| Ok(skip_tags(cbor, at_content(cbor, state)?))
+
+## At the map of an internal tag with one payload that is not a record: the item at the content key.
+## No content key is an error at the map.
+at_content : Cbor, Cbor.State -> Try(Cbor.State, [InvalidCbor(U64)])
+at_content = |cbor, state| if (state.pos == cbor.content.at) seek_key(state, cbor.content.key) else Ok(state)
+
+## The value of the text key `key` in the map at `state`: the first such key, when the map has it two times.
+## No such key, a key that is not text, or an item that is not a map is an error at the map.
+seek_key : Cbor.State, Str -> Try(Cbor.State, [InvalidCbor(U64)])
+seek_key = |state, key| {
+	h = head(state)?
+	if h.major != 5 {
+		return Err(InvalidCbor(state.pos))
+	}
+	var $s = at(state, h.next)
+	for _ in (0.U64).until(h.arg) {
+		k = text($s) ? |_| InvalidCbor(state.pos)
+		if k.value == key {
+			return Ok(k.rest)
+		}
+		$s = skip(k.rest)?
+	}
+	Err(InvalidCbor(state.pos))
+}
+
+## The head of a map that reads as a record or a `Dict`.
+map_start : Cbor.State -> Try([Counted({ len : U64, rest : Cbor.State }), Uncounted(Cbor.State)], [InvalidCbor(U64)])
+map_start = |state| {
+	h = head(state)?
+	# Each entry is 2 bytes or more.
+	if h.major == 5 and h.arg <= (state.bytes.len() - h.next) // 2 {
+		Ok(Counted({ len: h.arg, rest: at(state, h.next) }))
+	} else {
+		Err(InvalidCbor(state.pos))
+	}
+}
+
+## The Roc tag name of the wire name `wire` in the case `case` (`Cbor.UnionOptions`). `Upper` and `Lower` take
+## words of letters and digits with one `_` between two words. Each word starts with a capital, and each `_` goes.
+roc_tag : [Exact, Upper, Lower], Str -> Try(Str, [NotInCase])
+roc_tag = |case, wire| {
+	(first, last) =
+		match case {
+			Exact => return Ok(wire)
+			Upper => ('A', 'Z')
+			Lower => ('a', 'z')
+		}
+	var $out = List.with_capacity(wire.count_utf8_bytes())
+	var $start = Bool.True
+	for b in wire.to_utf8() {
+		if b == '_' {
+			if $start {
+				return Err(NotInCase)
+			}
+			$start = Bool.True
+		} else if b >= '0' and b <= '9' {
+			$out = $out.append(b)
+			$start = Bool.False
+		} else if b >= first and b <= last {
+			# The small letter, then the capital at the start of a word.
+			small = b.bitwise_or(0x20)
+			$out = $out.append(if ($start) small - 32 else small)
+			$start = Bool.False
+		} else {
+			return Err(NotInCase)
+		}
+	}
+	if $start {
+		return Err(NotInCase)
+	}
+	Str.from_utf8($out).map_err(|_| NotInCase)
+}
 
 ## Skips each tag of the option `ignore_tags` before an item, so the reader of a type reads the item
 ## as if it had no tag. Each step moves on 1 byte or more, so the loop ends.
-untag : Cbor, Cbor.State -> Cbor.State
-untag = |cbor, state|
+skip_tags : Cbor, Cbor.State -> Cbor.State
+skip_tags = |cbor, state|
 	if cbor.ignore_tags.is_empty() {
 		state
 	} else {
@@ -1237,7 +1424,7 @@ text = |state| {
 ## With `int_from_text`, text that is a canonical decimal integer is also read.
 int : Cbor, Cbor.State -> Try({ value : I128, rest : Cbor.State }, [InvalidCbor(U64)])
 int = |cbor, tagged| {
-	state = untag(cbor, tagged)
+	state = untag(cbor, tagged)?
 	h = head(state)?
 	match (h.major, cbor) {
 		(0, _) => Ok({ value: h.arg.to_i128(), rest: at(state, h.next) })

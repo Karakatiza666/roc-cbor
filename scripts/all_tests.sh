@@ -20,6 +20,8 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test tests/rows.roc
 # Tags and dynamic values: Cbor.parse_cbor_tag, Cbor.peek, Cbor.Value, ignore_tags, dec_from_text, through the public API of the package.
 "$ROC" test tests/tags.roc
+# Tag unions: the option unions (an internal tag) and Cbor.parse_union, through the public API of the package.
+"$ROC" test tests/unions.roc
 for f in examples/*.roc; do
 	"$ROC" check "$f"
 	"$ROC" "$f"
