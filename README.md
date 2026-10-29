@@ -16,10 +16,10 @@ You give a Roc type. The compiler derives the reader and the writer. You do not 
 ## Use
 
 Add the package to the header with its release URL. The release notes of each
-[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.3.0 (section "Changes"). It adds tags and dynamic values (section "Tags and dynamic values").
+[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.4.0 (section "Changes"). It reads internal tag unions (section "Tag unions").
 
 ```roc
-app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.3.0/Tnw6MgCr8RziwL6zZCHekkmzk715kfp83i7PxHASz9N.tar.zst" }
+app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.4.0/EnfRKFT7uPHmd3zT5PcwAiBWUtGmBXapJqFK5166U33J.tar.zst" }
 
 import cbor.Cbor
 ```
