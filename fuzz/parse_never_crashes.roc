@@ -7,7 +7,8 @@ import fuzz.Fuzz
 import pkg.Cbor
 
 # L1 target: Cbor.parse, Cbor.parse_camel, Cbor.parse_with and Cbor.path_at never crash, for any
-# bytes and several target types.
+# bytes and several target types. Also with the options ignore_tags and dec_from_text, and into Cbor.Value.
+# A Cbor.Value that reads writes bytes that read the same Cbor.Value.
 
 Row : { id : U64, name : Str, tags : List(Str), cells : List(List(I64)), note : Try(Str, [Missing]), flag : Bool, extra ?: Bool }
 
@@ -49,7 +50,31 @@ test! = |bytes| {
 	text_row = Cbor.parse_with(bytes, { fields: Camel, int_from_text: Bool.True })
 	text_ints : Try(List(I8), _)
 	text_ints = Cbor.parse_with(bytes, { fields: Snake, int_from_text: Bool.True })
-	ok = in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(cells, len) and in_input(raw, len) and in_input(small, len) and in_input(dec, len) and in_input(decs, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
+	tag_opts : Cbor.Options
+	tag_opts = { ignore_tags: [6, 10, 4], dec_from_text: Bool.True }
+	tag_row : Try(Row, _)
+	tag_row = Cbor.parse_with(bytes, tag_opts)
+	tag_decs : Try(List(Try(Dec, [Null])), _)
+	tag_decs = Cbor.parse_with(bytes, tag_opts)
+	text_dec : Try(Dec, _)
+	text_dec = Cbor.parse_with(bytes, { dec_from_text: Bool.True })
+	any : Try(Cbor.Value, _)
+	any = Cbor.parse(bytes)
+	anys : Try({ id : U64, v : Cbor.Value, w : List(Cbor.Value) }, _)
+	anys = Cbor.parse_with(bytes, tag_opts)
+	same =
+		match any {
+			Ok(v) => {
+				again : Try(Cbor.Value, _)
+				again = Cbor.parse(Cbor.encode(v))
+				again == Ok(v)
+			}
+			Err(_) => Bool.True
+		}
+	if !same {
+		crash "a Cbor.Value does not read back"
+	}
+	ok = in_input(tag_row, len) and in_input(tag_decs, len) and in_input(text_dec, len) and in_input(any, len) and in_input(anys, len) and in_input(row, len) and in_input(camel, len) and in_input(numbers, len) and in_input(text, len) and in_input(nullable, len) and in_input(cells, len) and in_input(raw, len) and in_input(small, len) and in_input(dec, len) and in_input(decs, len) and in_input(dict, len) and in_input(text_row, len) and in_input(text_ints, len)
 	if !ok {
 		crash "error position past the end of the input"
 	}

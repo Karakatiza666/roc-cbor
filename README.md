@@ -7,7 +7,7 @@ You give a Roc type. The compiler derives the reader and the writer. You do not 
 
 | Item | Value |
 | --- | --- |
-| Module | `Cbor` (public), with the nested type `Cbor.Bytes` |
+| Module | `Cbor` (public), with the nested types `Cbor.Bytes` and `Cbor.Value` |
 | Dependencies | none |
 | Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-10-19-601b54c`). Also tested on `nightly-2026-10-12-2664a27` and `nightly-2026-10-14-38a3029` for 0.2.0 and before. |
 | Tests | `scripts/all_tests.sh` (section "Tests") |
@@ -30,7 +30,7 @@ import cbor.Cbor
 | `Cbor.parse` | `List(U8) -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value. The number in `InvalidCbor` is the byte position of the error. |
 | `Cbor.parse_camel` | the same as `parse` | Read record fields in camelCase: the field `user_id` is read from the key `userId`. |
 | `Cbor.parse_with` | `List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs])` | Read a value with options (table "Options") |
-| `Cbor.Options` | `{ fields ?: [Snake, Camel], int_from_text ?: Bool }` | The options of `parse_with`. Each field is optional: `{}` is the same as `parse`. |
+| `Cbor.Options` | `{ fields ?: [Snake, Camel], int_from_text ?: Bool, dec_from_text ?: Bool, ignore_tags ?: List(U64) }` | The options of `parse_with`. Each field is optional: `{}` is the same as `parse`. |
 | `Cbor.path_at` | `List(U8), U64 -> Try(List(Cbor.Step), [NotFound])` | The path to the item that starts at a position, for example the position of `InvalidCbor(pos)` |
 | `Cbor.Step` | `[Index(U64), Key(Str)]` | One step of a path: an array index or a map key |
 | `Cbor.Bytes` | `Cbor.Bytes := List(U8)` | A field that is written as a CBOR byte string. It reads a byte string or an array of integers 0 to 255. `Cbor.Bytes.(list)` or `Cbor.Bytes.from_list(list)` makes one. `bytes.to_list()` gives the list. |
@@ -38,11 +38,20 @@ import cbor.Cbor
 | `Cbor.Encodable` | `where` alias | A function that calls `Cbor.encode` with a type variable has `where [a.Cbor.Encodable([])]` |
 | `Cbor.Readable` | `where` alias | The short form of `Cbor.Parseable`: `where [a.Cbor.Readable(errs)]` (section "Readable and Writable") |
 | `Cbor.Writable` | `where` alias | The short form of `Cbor.Encodable([])`: `where [a.Cbor.Writable]` |
+| `Cbor.Value` | `Cbor.Value := [Int(I128), Float(F64), Bytes(List(U8)), Text(Str), Array(List(Cbor.Value)), Map(List((Cbor.Value, Cbor.Value))), Tag(U64, Cbor.Value), Bool(Bool), Null, Undefined, Simple(U8)]` | Any CBOR item, with its tags (section "Tags and dynamic values") |
+| `Cbor.parse_cbor_tag` | `Cbor, Cbor.State -> Try({ value : U64, rest : Cbor.State }, [InvalidCbor(U64)])` | In a `parser_for` of your own: read the head of a tag. `value` is the tag number, `rest` is at the tagged item. |
+| `Cbor.encode_cbor_tag` | `U64, List(U8) -> Try(List(U8), [])` | In an `encoder_for` of your own: write the head of a tag |
+| `Cbor.parse_item` | `Cbor, Cbor.State -> Try({ value : a, rest : Cbor.State }, [InvalidCbor(U64), ..errs])` | In a `parser_for` of your own: read one item of the type `a` (for example the tagged item) |
+| `Cbor.encode_item` | `a, List(U8) -> Try(List(U8), err)` | In an `encoder_for` of your own: write one item of the type `a` |
+| `Cbor.peek` | `Cbor, Cbor.State -> Try(Cbor.Kind, [InvalidCbor(U64)])` | In a `parser_for` of your own: the kind of the next item, with no read |
+| `Cbor.Kind` | `[Int, Bytes, Text, Array, Map, Tag(U64), Bool, Null, Undefined, Simple(U8), Float]` | The result of `peek` |
 
 The other functions of `Cbor` (`parse_str`, `encode_record` and the like) are the codec protocol.
-The derived `parser_for` and `encoder_for` call them. An app does not call them. `Cbor.State` is opaque.
+The derived `parser_for` and `encoder_for` call them. `Cbor.State` is opaque.
+A `parser_for` of your own can also call them, as `Cbor.parse_str(encoding, state)`, and gives its own errors with `Cbor.invalid_value(encoding, state)`.
 
 `examples/round_trip.roc` uses each item of the table, except `Cbor.Readable` and `Cbor.Writable` (`tests/aliases.roc` uses them).
+`tests/tags.roc` uses the items for tags in more types.
 
 ```roc
 Pkg : { name : Str, size : U64, tags : List(Str) }
@@ -60,8 +69,9 @@ A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `enc
 
 ### Options
 
-Each field of `Cbor.Options` is optional. An omitted field has its default: `fields` is `Snake`, `int_from_text` is `Bool.False`.
+Each field of `Cbor.Options` is optional. An omitted field has its default: `fields` is `Snake`, `int_from_text` and `dec_from_text` are `Bool.False`, `ignore_tags` is `[]`.
 So `{}`, `{ fields: Camel }`, `{ int_from_text: Bool.True }` and the full record all compile.
+A record in a `let` that is not the full record needs the annotation `Cbor.Options` (section "Changes", 0.3.0).
 
 | Field | Value | Effect |
 | --- | --- | --- |
@@ -70,7 +80,15 @@ So `{}`, `{ fields: Camel }`, `{ int_from_text: Bool.True }` and the full record
 | `int_from_text` | `Bool.False` (default) | An integer type reads CBOR integers, and floats as the table "Profile" says (as `parse` and `parse_camel`) |
 | | `Bool.True` | An integer type (`U8` to `I64`) also reads text that is a canonical decimal integer in the range of the type: `0`, or `-?[1-9][0-9]*`. Other text (`-0`, `01`, `+1`, `1.0`, spaces) is an error. A `Str` field does not change. |
 
+| `dec_from_text` | `Bool.False` (default) | A `Dec` reads an integer, a decimal fraction (tag 4) or a float (table "Profile") |
+| | `Bool.True` | A `Dec` also reads text in the number form of JSON: `-?(0\|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?`, exact. `"12.50"` is 12.5 and `"4E+1"` is 40. More than 18 fraction digits (after the exponent), a value outside the range of a `Dec`, or other text (`01`, `+1`, `1.`, `.5`, spaces) is an error. Other types do not change. |
+| `ignore_tags` | `[]` (default) | A tag is an error, except the tag 4 of a `Dec` and its tags 2 and 3 |
+| | A list of tag numbers | The reader of each type skips a tag of the list before an item, and reads the item. One item can have more than one such tag. So with `[6]` the bytes `c6 f6` are `null`: no key in a record, `Err(Null)` of a `Try(a, [Null])`. A map key does not skip tags. `Cbor.peek`, `Cbor.parse_cbor_tag` and `Cbor.Value` see each tag. |
+
 `int_from_text` is for a peer that sends a 64-bit integer as text, for example a SQL `CAST(id AS TEXT)`.
+`dec_from_text` is for a peer that sends a decimal number as text, for example a SQL `NUMERIC`, or a decimal in a tag of the peer.
+`ignore_tags` is for a peer that puts a tag of its own before an item that a Roc type reads with no tag.
+Tag numbers are in the [IANA registry](https://www.iana.org/assignments/cbor-tags/cbor-tags.xhtml). The package gives no tag a meaning of its own, except the tags of RFC 8949 for a `Dec` (2, 3 and 4).
 
 ```roc
 Row : { name : Str, id : I64 }
@@ -143,7 +161,77 @@ A function with `Readable` can call a function with `Parseable`.
 A form with no `errs` is not possible: the compiler does not allow `..` in an alias.
 `tests/aliases.roc` has generic helpers for a record, `List(Row)`, `List(I64)`, `Cbor.Bytes` and a type of your own with a closed reader.
 
+### Tags and dynamic values
+
+A peer can send items with tags (RFC 8949 3.4): a standard tag such as 37 (UUID), or a tag of its own from the unassigned numbers.
+The package is generic: it has no type for a tag of a peer, and no geometry or time types. It gives the building blocks, and a type of your app reads its tag.
+
+| Need | Building block | Example |
+| --- | --- | --- |
+| A Roc type for one tag (a UUID, a time, a point, a link of a database) | A `parser_for` of your own with `Cbor.parse_cbor_tag`, then `Cbor.parse_item` for the tagged item. An `encoder_for` with `Cbor.encode_cbor_tag`, then `Cbor.encode_item`. | `Uuid`, `Instant`, `Point`, `Link` in `tests/tags.roc` |
+| A value that can be one of several kinds | `Cbor.peek` in a `parser_for` of your own, then the reader of that kind | `Cell` in `tests/tags.roc`, `Key` in `examples/round_trip.roc` |
+| A value with no fixed type (a key that is text or a number, the items of a patch, a reply with any result) | `Cbor.Value`: any item, with each tag | `Link.key` in `tests/tags.roc` |
+| A tag before `null` that means "no value" | `ignore_tags: [n]` | `c6 f6` with `[6]` |
+| A decimal number as text in a tag | `ignore_tags: [n]` and `dec_from_text: Bool.True` | `ca 64 34 45 2b 31` (tag 10, `"4E+1"`) with `[10]` is 40 |
+
+```roc
+## A UUID (RFC 9562): the IANA tag 37 and a byte string of 16 bytes.
+Uuid := List(U8).{
+	parser_for : Cbor -> (Cbor.State -> Try({ value : Uuid, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for = |encoding| |state| {
+		tag = Cbor.parse_cbor_tag(encoding, state)?
+		bytes = Cbor.parse_bytes(encoding, tag.rest)?
+		if tag.value == 37 and bytes.value.len() == 16 {
+			Ok({ value: Uuid.(bytes.value), rest: bytes.rest })
+		} else {
+			Err(Cbor.invalid_value(encoding, state))
+		}
+	}
+
+	encoder_for : Cbor -> (Uuid, List(U8) -> Try(List(U8), []))
+	encoder_for = |_| |Uuid.(bytes), out| {
+		tagged = Cbor.encode_cbor_tag(37, out)?
+		Cbor.encode_item(Cbor.Bytes.(bytes), tagged)
+	}
+}
+```
+
+`Cbor.Value`:
+
+| Variant | CBOR | Note |
+| --- | --- | --- |
+| `Int(I128)` | Major type 0 or 1 | -2^64 to 2^64 - 1 reads. The writer writes a value outside that range as a bignum (tag 2 or 3). It reads back as `Tag(2, Bytes(_))` or `Tag(3, Bytes(_))`. |
+| `Float(F64)` | f16, f32, f64 | The writer writes f64 |
+| `Bytes(List(U8))`, `Text(Str)` | Byte string, text | The reader checks UTF-8 |
+| `Array(List(Cbor.Value))` | Array | |
+| `Map(List((Cbor.Value, Cbor.Value)))` | Map | Any key type. The entries keep their order, also a key that is there two times. |
+| `Tag(U64, Cbor.Value)` | A tag and its item | Each tag stays, also a tag of `ignore_tags` |
+| `Bool(Bool)`, `Null`, `Undefined` | `f4`, `f5`, `f6`, `f7` | |
+| `Simple(U8)` | Another simple value: 0 to 19, 32 to 255 | The writer writes `Simple(20)` to `Simple(23)` as `f4` to `f7`, and `Simple(24)` to `Simple(31)` (not valid) as `f7` |
+
+| Rule | Value |
+| --- | --- |
+| Equality and hash | Two values are equal when their bytes (`Cbor.encode`) are equal. `to_hash` hashes the bytes. So a `Cbor.Value` can be a `Dict` key. `Float(0.0)` and `Float(-0.0)` are not equal. `Int(1)` and `Float(1.0)` are not equal. |
+| Deep nesting | The reader and the writer use a loop, not a recursion: 100,000 nested arrays do not overflow the stack |
+| Profile | The same as for the other types: definite lengths only. An indefinite length, a break (`ff`), a reserved head and `f8` below 32 are errors. |
+| In a record | A `null` value in a map is still no key (rule N1): a required `Cbor.Value` field is `MissingRequiredField`. A `List(Cbor.Value)` keeps each `Null`. |
+
 ## Changes
+
+### 0.3.0
+
+This release adds tags and dynamic values (section "Tags and dynamic values"). The readers of 0.2.2 do not change when the new options are not set.
+
+| Change | Detail |
+| --- | --- |
+| `Cbor.parse_cbor_tag`, `Cbor.encode_cbor_tag` | Read and write the head of a tag in a `parser_for` or an `encoder_for` of your own. Before: `Cbor.State` is opaque, so a type of an app could not read a tag. |
+| `Cbor.parse_item`, `Cbor.encode_item` | Read and write one item of a type, for example the tagged item |
+| `Cbor.peek`, `Cbor.Kind` | The kind of the next item, with no read |
+| `Cbor.Value` | Any CBOR item, with its tags, maps with any keys, and simple values. `parser_for`, `encoder_for`, `is_eq` and `to_hash`. |
+| Option `ignore_tags` | The readers of the types skip a tag of the list before an item |
+| Option `dec_from_text` | A `Dec` also reads decimal text, with an exponent (`"4E+1"`) |
+| Migration | A `Cbor.Options` record in a `let` that is not the full record (for example `opts = { fields: Camel, int_from_text: Bool.True }`) needs the annotation `opts : Cbor.Options`. The compiler checks a record literal in a `let` with no annotation as a closed record, and the full record now has 4 fields. A record literal in the call (`Cbor.parse_with(bytes, { fields: Camel })`) does not change. |
+| Tests | `tests/tags.roc` (92 expects). `fuzz/round_trip.roc` has a field `List(Cbor.Value)` and the property that a tag 6 before each value reads the same item with `ignore_tags: [6]`. `fuzz/parse_never_crashes.roc` has `Cbor.Value` (it reads back from its own bytes) and the two new options. |
 
 ### 0.2.2
 
@@ -205,6 +293,7 @@ and a `null` value in a map is no key. A peer that reads JSON sees the same obje
 | `F32`, `F64` | Float (major type 7) |
 | `Dec` | Write: integer when it has no fraction (and fits), else decimal fraction (tag 4, exact). Read: integer, decimal fraction or float. |
 | `Dict(Str, v)` | Map with text keys. Read only. |
+| `Cbor.Value` | Any item, with its tags (section "Tags and dynamic values") |
 
 ## Profile
 
@@ -217,9 +306,9 @@ and a `null` value in a map is no key. A peer that reads JSON sees the same obje
 | Float | f16, f32, f64. An integer is also read as a float. An `F32` reads a finite value outside the F32 range as an error (not as an infinity). | `F64` as f64 (9 bytes, never shortened). `F32` as f32 (5 bytes). |
 | `null`, `undefined` | Both are the same. In a map read as a record: the entry is skipped, as if the key is not there. In another place: `Err(Null)` of a `Try(a, [Null])`, else an error. | `null`, but not as a value in a map: that entry is not written |
 | Integer read as a `Bool` | 0 is `false`, 1 is `true`, with the integer rules above (also a float 0.0 or 1.0). Another integer is an error. | Not written: a `Bool` writes `false` or `true` |
-| Tag (major type 6) | An error, as a value (a `Dec` reads tag 4, and the tags 2 and 3 of its mantissa). It is skipped in the value of an unknown record field. | Not written |
-| Simple values other than `false`, `true`, `null`, `undefined` | An error | Not written |
-| Map key | Text only | Text only (record field names) |
+| Tag (major type 6) | An error, as a value (a `Dec` reads tag 4, and the tags 2 and 3 of its mantissa). It is skipped in the value of an unknown record field. A tag of the option `ignore_tags` is skipped before an item. A `parser_for` of your own reads a tag with `Cbor.parse_cbor_tag`. `Cbor.Value` reads each tag. | Not written by the derived encoders (a `Dec` writes tag 4). An `encoder_for` of your own writes one with `Cbor.encode_cbor_tag`. `Cbor.Value` writes `Tag(n, v)`. |
+| Simple values other than `false`, `true`, `null`, `undefined` | An error, except into `Cbor.Value` (`Simple(n)`) | Only `Cbor.Value` writes them |
+| Map key | Text only, except into `Cbor.Value` (any key) | Text only (record field names), except `Cbor.Value` |
 | Unknown record field | Skipped (the whole item) | |
 | Order of map keys | Any | The order of the derived encoder. It is not the deterministic order of RFC 8949 4.2. |
 | Bytes after the value | An error at the position of the first extra byte | |
@@ -261,6 +350,7 @@ Known limits:
 | RFC 8949 Appendix A (170 expects) | `roc test tests/rfc8949.roc` |
 | `Readable` and `Writable` (5 expects) | `roc test tests/aliases.roc` |
 | SQL rows: `Bool` and `null` (45 expects) | `roc test tests/rows.roc` |
+| Tags and dynamic values (92 expects) | `roc test tests/tags.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
 
@@ -270,8 +360,8 @@ roc-fuzz runs on Linux x86-64 and macOS arm64 only. A failure is saved in `.cach
 
 | Target | Property |
 | --- | --- |
-| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists, a `Try(a, [Missing])` field, a `Bool` field and an optional field, `List(U64)`, `Str`, `Try(U64, [Null])`, `List((Bool, Try(I64, [Null])))`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`. The position in `InvalidCbor` is in the input. |
-| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, `Bool`, lists, tuples, tags, `Try(_, [Missing])`, a list of `Try(_, [Null])`). Also: a record with `Err(Null)` in a field reads back with `Err(Missing)` in that field. |
+| `fuzz/parse_never_crashes.roc` | Any bytes give a value or an error, never a crash, from `Cbor.parse`, `Cbor.parse_camel`, `Cbor.parse_with` (with `int_from_text`) and `Cbor.path_at`. Target types: a record with nested lists, a `Try(a, [Missing])` field, a `Bool` field and an optional field, `List(U64)`, `Str`, `Try(U64, [Null])`, `List((Bool, Try(I64, [Null])))`, `Cbor.Bytes`, `List(U8)`, `Dec`, `List(Dec)`, `Dict(Str, U64)`, `Cbor.Value`, and a record with `Cbor.Value` fields. Also with `ignore_tags` and `dec_from_text`. The position in `InvalidCbor` is in the input. A `Cbor.Value` that reads, reads back from its own bytes. |
+| `fuzz/round_trip.roc` | `Cbor.parse(Cbor.encode(v)) == Ok(v)`, and `parse_with` with `int_from_text` gives the same, for random values of a record with each supported kind of field (integers, floats with no NaN, text, bytes, `Bool`, lists, tuples, tags, `Try(_, [Missing])`, a list of `Try(_, [Null])`, a list of `Cbor.Value` of each kind to a depth of 3). Also: a record with `Err(Null)` in a field reads back with `Err(Missing)` in that field. The bytes with a tag 6 before each value (not a map key, not in a tag, not in a `Cbor.Value`) read the same item with `ignore_tags: [6]`. |
 
 `scripts/bundle.sh` makes `dist/<hash>.tar.zst` and prints its release URL.
 `scripts/test_bundle.sh` runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep`.
@@ -323,7 +413,8 @@ Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repositor
 | `tests/rfc8949.roc` | The RFC 8949 Appendix A vectors |
 | `tests/aliases.roc` | Generic helpers with `Cbor.Readable` and `Cbor.Writable` |
 | `tests/rows.roc` | SQL rows: `Bool` from 0 and 1, `null` in a map, in a list and in a tuple, the writer |
-| `examples/round_trip.roc` | An app that uses each public item, and reads a SQL row. It runs on the echo host of roc, with no platform. |
+| `tests/tags.roc` | Types of an app over tags, `Cbor.peek`, `Cbor.Value`, the options `ignore_tags` and `dec_from_text` |
+| `examples/round_trip.roc` | An app that uses each public item, reads a SQL row, and reads a type over a tag. It runs on the echo host of roc, with no platform. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |

@@ -2,6 +2,8 @@ app [] { pkg: "../src/main.roc" }
 
 # Uses each public item of the package: Cbor.encode, Cbor.parse, Cbor.parse_camel,
 # Cbor.parse_with, Cbor.Options, Cbor.path_at, Cbor.Step, Cbor.Bytes, Cbor.Parseable and Cbor.Encodable. CI runs it on the source and on the bundle.
+# Also the building blocks for a type over a CBOR tag: Cbor.parse_cbor_tag, Cbor.encode_cbor_tag,
+# Cbor.parse_item, Cbor.encode_item, Cbor.peek, Cbor.Kind, Cbor.Value, and the options ignore_tags and dec_from_text.
 # Also reads a SQL row: a NULL column into an optional field, a 0 or 1 column into a Bool.
 
 import pkg.Cbor
@@ -13,6 +15,39 @@ Pkg : {
 	digest : Cbor.Bytes,
 	note ?: Str,
 	license : Try(Str, [Missing]),
+}
+
+## A UUID (RFC 9562): the IANA tag 37 and a byte string. A type of the app reads and writes the tag.
+Uuid := List(U8).{
+	is_eq : _
+
+	parser_for : Cbor -> (Cbor.State -> Try({ value : Uuid, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for = |encoding| |state| {
+		tag = Cbor.parse_cbor_tag(encoding, state)?
+		if tag.value != 37 {
+			return Err(Cbor.invalid_value(encoding, state))
+		}
+		bytes : { value : Cbor.Bytes, rest : Cbor.State }
+		bytes = Cbor.parse_item(encoding, tag.rest)?
+		Ok({ value: Uuid.(bytes.value.to_list()), rest: bytes.rest })
+	}
+
+	encoder_for : Cbor -> (Uuid, List(U8) -> Try(List(U8), []))
+	encoder_for = |_| |Uuid.(bytes), out| {
+		tagged = Cbor.encode_cbor_tag(37, out)?
+		Cbor.encode_item(Cbor.Bytes.(bytes), tagged)
+	}
+}
+
+## A key that is a number or text: Cbor.peek picks the reader.
+Key := [Number(U64), Name(Str)].{
+	parser_for : Cbor -> (Cbor.State -> Try({ value : Key, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for = |encoding| |state|
+		match Cbor.peek(encoding, state)? {
+			Int => Cbor.parse_u64(encoding, state).map_ok(|n| { value: Key.Number(n.value), rest: n.rest })
+			Text => Cbor.parse_str(encoding, state).map_ok(|t| { value: Key.Name(t.value), rest: t.rest })
+			_ => Err(Cbor.invalid_value(encoding, state))
+		}
 }
 
 ## A function of your own that wraps `Cbor.encode` repeats its constraint.
@@ -102,6 +137,26 @@ main! = |args| {
 	match row {
 		Ok(r) => echo!("sql row: name=${r.name} note=${Str.inspect(r.?note)} active=${Str.inspect(r.active)}\n")
 		Err(e) => echo!("sql row: ${Str.inspect(e)}\n")
+	}
+
+	# A type over a tag, a key of two kinds, and any item as a Cbor.Value (it keeps the tag 1).
+	id = Uuid.(List.repeat(0xab, 16 + args.len()))
+	tagged : Try({ id : Uuid, any : Cbor.Value }, _)
+	tagged = Cbor.parse(Cbor.encode({ id, any: Cbor.Value.Tag(1, Cbor.Value.Int(0)) }))
+	keys : Try(List(Key), _)
+	keys = Cbor.parse([0x82, 0x07, 0x61, 0x61])
+	any : Try(Cbor.Value, _)
+	any = Cbor.parse([0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0])
+	echo!("tags: id=${Str.inspect(tagged.map_ok(|t| t.id == id))} keys=${Str.inspect(keys.is_ok())} any=${Str.inspect(any)}\n")
+
+	# A peer with tags of its own: tag 6 before null is no value, tag 10 before text is a decimal.
+	# {"price": 10("4E+1"), "note": 6(null)}. The `args` keep the value unknown at compile time.
+	peer_row = [0xa2, 0x65, 0x70, 0x72, 0x69, 0x63, 0x65, 0xca, 0x64, 0x34, 0x45, 0x2b, 0x31, 0x64, 0x6e, 0x6f, 0x74, 0x65, 0xc6, 0xf6].concat(List.repeat(0x00, args.len()))
+	priced : Try({ price : Dec, note ?: Str }, _)
+	priced = Cbor.parse_with(peer_row, { ignore_tags: [6, 10], dec_from_text: Bool.True })
+	match priced {
+		Ok(p) => echo!("peer row: price=${p.price.to_str()} note=${Str.inspect(p.?note)}\n")
+		Err(e) => echo!("peer row: ${Str.inspect(e)}\n")
 	}
 
 	extra : Try(U64, _)

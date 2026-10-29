@@ -18,6 +18,8 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test tests/aliases.roc
 # SQL rows: a Bool reads 0 and 1, a null value in a map is no key, through the public API of the package.
 "$ROC" test tests/rows.roc
+# Tags and dynamic values: Cbor.parse_cbor_tag, Cbor.peek, Cbor.Value, ignore_tags, dec_from_text, through the public API of the package.
+"$ROC" test tests/tags.roc
 for f in examples/*.roc; do
 	"$ROC" check "$f"
 	"$ROC" "$f"
