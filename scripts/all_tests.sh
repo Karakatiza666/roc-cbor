@@ -18,6 +18,8 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test tests/aliases.roc
 # SQL rows: a Bool reads 0 and 1, a null value in a map is no key, through the public API of the package.
 "$ROC" test tests/rows.roc
+# Small integer types: the range of U8 to I32, and a List(U8) as an array, through the public API of the package.
+"$ROC" test tests/ints.roc
 for f in examples/*.roc; do
 	"$ROC" check "$f"
 	"$ROC" "$f"

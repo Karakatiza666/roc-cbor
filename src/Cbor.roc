@@ -100,7 +100,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 					var $out = List.with_capacity(h.arg)
 					for _ in (0.U64).until(h.arg) {
 						n = int(strict, $s)?
-						$out = $out.append(n.value.to_u8_try() ? |_| InvalidCbor($s.pos))
+						$out = $out.append(narrow(n.value, $s.pos)?.to_u8_try() ? |_| InvalidCbor($s.pos))
 						$s = n.rest
 					}
 					Ok({ value: Cbor.Bytes.($out), rest: $s })
@@ -244,7 +244,7 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 			Ok({ value: b, rest: Cbor.State.{ bytes: state.bytes, pos: state.pos + 1, raw: state.raw - 1 } })
 		} else {
 			n = int(cbor, state)?
-			v = n.value.to_u8_try() ? |_| InvalidCbor(state.pos)
+			v = narrow(n.value, state.pos)?.to_u8_try() ? |_| InvalidCbor(state.pos)
 			Ok({ value: v, rest: n.rest })
 		}
 
@@ -252,14 +252,14 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	parse_u16 : Cbor, Cbor.State -> Try({ value : U16, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_u16 = |cbor, state| {
 		n = int(cbor, state)?
-		Ok({ value: n.value.to_u16_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
+		Ok({ value: narrow(n.value, state.pos)?.to_u16_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_u32 : Cbor, Cbor.State -> Try({ value : U32, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_u32 = |cbor, state| {
 		n = int(cbor, state)?
-		Ok({ value: n.value.to_u32_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
+		Ok({ value: narrow(n.value, state.pos)?.to_u32_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
@@ -273,21 +273,21 @@ Cbor :: { fields : [Snake, Camel], int_from_text : Bool }.{
 	parse_i8 : Cbor, Cbor.State -> Try({ value : I8, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_i8 = |cbor, state| {
 		n = int(cbor, state)?
-		Ok({ value: n.value.to_i8_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
+		Ok({ value: narrow(n.value, state.pos)?.to_i8_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_i16 : Cbor, Cbor.State -> Try({ value : I16, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_i16 = |cbor, state| {
 		n = int(cbor, state)?
-		Ok({ value: n.value.to_i16_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
+		Ok({ value: narrow(n.value, state.pos)?.to_i16_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_i32 : Cbor, Cbor.State -> Try({ value : I32, rest : Cbor.State }, [InvalidCbor(U64)])
 	parse_i32 = |cbor, state| {
 		n = int(cbor, state)?
-		Ok({ value: n.value.to_i32_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
+		Ok({ value: narrow(n.value, state.pos)?.to_i32_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
@@ -788,6 +788,13 @@ text = |state| {
 	value = Str.from_utf8(state.bytes.sublist({ start: h.next, len: h.arg })) ? |_| InvalidCbor(state.pos)
 	Ok({ value, rest: at(state, h.next + h.arg) })
 }
+
+## The I128 of `int` as an I64, before the conversion to a type of 32 bits or less. The wasm32 dev backend of the
+## Roc compiler (`roc build --target=wasm32 --opt=dev`, nightlies 2026-10-31 and 2026-11-01) gives `Err(OutOfRange)`
+## for `I128.to_u8_try`, `to_u16_try`, `to_i8_try` and `to_i16_try` of a value in range, so a `List(U8)` (an array)
+## did not read back there. `I64` to a small type is correct on each backend.
+narrow : I128, U64 -> Try(I64, [InvalidCbor(U64)])
+narrow = |v, pos| v.to_i64_try().map_err(|_| InvalidCbor(pos))
 
 ## An integer of major type 0 or 1, as I128 so that both u64 and -2^64 fit.
 ## A float with no fraction is also read when its size is 2^53 - 1 or less (a JS Number).

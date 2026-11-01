@@ -146,6 +146,17 @@ A form with no `errs` is not possible: the compiler does not allow `..` in an al
 
 ## Changes
 
+### 0.2.3
+
+A fix for a compiler fault, on the 0.2 line (the same fix as 0.4.1). The read of a small integer type goes through an `I64`. No API change.
+
+| Change | Detail |
+| --- | --- |
+| Cause | The wasm32 dev backend of the Roc compiler (`roc build --target=wasm32 --opt=dev`; seen on `nightly-2026-10-31-f7bef6b` and `nightly-2026-11-01-48d3369`) gives `Err(OutOfRange)` for `I128.to_u8_try`, `to_u16_try`, `to_i8_try` and `to_i16_try` of a value in range. The reader keeps a CBOR integer as an `I128`. |
+| Effect before | In such a build, a `U8`, `U16`, `I8` or `I16` did not read: `Err(InvalidCbor(pos))` at the integer. So a `List(U8)` (it is written as an array) did not read back from its own bytes, and `Cbor.Bytes` did not read an array (a D1 BLOB). The other backends were correct. |
+| Fix | The reader converts the `I128` to an `I64` first, then to `U8`, `U16`, `U32`, `I8`, `I16` or `I32`. The range and the error position do not change. |
+| Tests | `tests/ints.roc` (12 expects). `roc test` runs the interpreter, which does not have the fault. The check in a wasm32 dev build is in the `cloudflare-workers` platform (the conformance checks of `Memo`). |
+
 ### 0.2.2
 
 This release changes two behaviors. There is no option for the old behavior (section "SQL rows" gives the reasons).
@@ -262,6 +273,7 @@ Known limits:
 | RFC 8949 Appendix A (170 expects) | `roc test tests/rfc8949.roc` |
 | `Readable` and `Writable` (5 expects) | `roc test tests/aliases.roc` |
 | SQL rows: `Bool` and `null` (45 expects) | `roc test tests/rows.roc` |
+| Small integer types: `U8` to `I32`, `List(U8)` as an array (12 expects) | `roc test tests/ints.roc` |
 | Examples | `roc check` and run each `examples/*.roc` |
 | Docs | `roc docs src/main.roc` |
 
@@ -311,6 +323,7 @@ A tag has no `v`: roc reads the version from the URL, and the tag is a segment o
 | --- | --- | --- |
 | [roc-lang/roc#12309](https://github.com/roc-lang/roc/issues/12309) (does not reproduce on `nightly-2026-10-19-601b54c`; it reproduces on 10-09, 10-12 and 10-14) | A nominal or opaque type over a builtin (`Secret :: Str`) has no opt in, but the encoder still writes its value when it is in a record, a tuple or a tag. So `Cbor.encode` can write hidden data. | Back the type with a record: `Secret :: { text : Str }` |
 | [roc-lang/roc#12310](https://github.com/roc-lang/roc/issues/12310) (does not reproduce on `nightly-2026-10-19-601b54c`; it reproduces on 10-09, 10-12 and 10-14) | A function with no annotation gives a value that `Json` parsed. Another function takes that value with a `Cbor.Parseable` constraint. The compiler gives "type mismatch" and "type not determined". | Annotate the first function with the full result type |
+| No issue yet (seen on `nightly-2026-10-31-f7bef6b` and `nightly-2026-11-01-48d3369`) | The wasm32 dev backend (`--target=wasm32 --opt=dev`) gives `Err(OutOfRange)` for `I128.to_u8_try`, `to_u16_try`, `to_i8_try` and `to_i16_try` of a value in range. `to_u32_try`, `to_i32_try`, `to_u64_try`, `to_i64_try`, the `_wrap` forms, and `I64` and `U64` to a small type are correct. | 0.2.3 goes through `I64` (section "Changes", 0.2.3) |
 | No issue (seen on `nightly-2026-10-12-2664a27`, not on `nightly-2026-10-14-38a3029` or `nightly-2026-10-19-601b54c`) | Some programs that parse into a record with an optional field (`extra ?: Bool`) crash the compiler (SIGSEGV), with `Json.parse` too. A first build of the fuzz target had this crash. | Use a `Try(a, [Missing])` field, or a later nightly |
 
 Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repository. Both issues reproduce on `nightly-2026-10-14-38a3029`, and neither reproduces on `nightly-2026-10-19-601b54c`.
@@ -324,6 +337,7 @@ Source of the repros: `research/roc-bugs/` of the `cloudflare-workers` repositor
 | `tests/rfc8949.roc` | The RFC 8949 Appendix A vectors |
 | `tests/aliases.roc` | Generic helpers with `Cbor.Readable` and `Cbor.Writable` |
 | `tests/rows.roc` | SQL rows: `Bool` from 0 and 1, `null` in a map, in a list and in a tuple, the writer |
+| `tests/ints.roc` | Small integer types: the bounds of `U8` to `I32`, `List(U8)` as an array |
 | `examples/round_trip.roc` | An app that uses each public item, and reads a SQL row. It runs on the echo host of roc, with no platform. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `bundle.sh`, `test_bundle.sh` |
