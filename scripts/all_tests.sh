@@ -22,6 +22,8 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test tests/tags.roc
 # Tag unions: the option unions (an internal tag) and Cbor.parse_union, through the public API of the package.
 "$ROC" test tests/unions.roc
+# Small integer types: the range of U8 to I32, and a List(U8) as an array, through the public API of the package.
+"$ROC" test tests/ints.roc
 for f in examples/*.roc; do
 	"$ROC" check "$f"
 	"$ROC" "$f"
