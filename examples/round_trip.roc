@@ -1,10 +1,12 @@
 app [] { pkg: "../src/main.roc" }
 
-# Uses each public item of the package: Cbor.encode, Cbor.parse, Cbor.parse_camel,
-# Cbor.parse_with, Cbor.Options, Cbor.path_at, Cbor.Step, Cbor.Bytes, Cbor.Parseable and Cbor.Encodable. CI runs it on the source and on the bundle.
-# Also the building blocks for a type over a CBOR tag: Cbor.parse_cbor_tag, Cbor.encode_cbor_tag,
-# Cbor.parse_item, Cbor.encode_item, Cbor.peek, Cbor.Kind, Cbor.Value, and the options ignore_tags and dec_from_text.
-# Also reads a SQL row: a NULL column into an optional field, a 0 or 1 column into a Bool.
+# Uses each public item of the package: Cbor.encode, Cbor.encode_try, Cbor.encode_with, Cbor.WriteOptions,
+# Cbor.parse, Cbor.parse_with, Cbor.Options, Cbor.Leniency, Cbor.sql_rows, Cbor.path_at, Cbor.Step, Cbor.U8Array,
+# Cbor.Parseable and Cbor.Encodable. CI runs it on the source and on the bundle.
+# Also the building blocks for a type over a CBOR tag: Cbor.parse_cbor_tag, Cbor.encode_tagged, Cbor.Writer,
+# Cbor.parse_item, Cbor.peek, Cbor.Kind, Cbor.Value, the option ignore_tags and the lenient read DecFromText.
+# Also Cbor.ValueMap, Cbor.IntValue, Cbor.parse_sequence, Cbor.parse_prefix and Cbor.Raw.
+# Also reads a SQL row (Cbor.sql_rows): a NULL column into an optional field, a 0 or 1 column into a Bool.
 # Also reads tag unions of a peer: an internal tag (Cbor.Unions), and tag names in upper snake case
 # (Cbor.parse_union, Cbor.UnionOptions).
 
@@ -14,7 +16,7 @@ Pkg : {
 	name : Str,
 	size : U64,
 	tags : List(Str),
-	digest : Cbor.Bytes,
+	digest : List(U8),
 	note ?: Str,
 	license : Try(Str, [Missing]),
 }
@@ -23,27 +25,24 @@ Pkg : {
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Uuid, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
 			return Err(Cbor.invalid_value(encoding, state))
 		}
-		bytes : { value : Cbor.Bytes, rest : Cbor.State }
+		bytes : { value : List(U8), rest : Cbor.Reader }
 		bytes = Cbor.parse_item(encoding, tag.rest)?
-		Ok({ value: Uuid.(bytes.value.to_list()), rest: bytes.rest })
+		Ok({ value: Uuid.(bytes.value), rest: bytes.rest })
 	}
 
-	encoder_for : Cbor -> (Uuid, List(U8) -> Try(List(U8), []))
-	encoder_for = |_| |Uuid.(bytes), out| {
-		tagged = Cbor.encode_cbor_tag(37, out)?
-		Cbor.encode_item(Cbor.Bytes.(bytes), tagged)
-	}
+	encoder_for : Cbor -> (Uuid, Cbor.Writer -> Try(Cbor.Writer, []))
+	encoder_for = |_| |Uuid.(bytes), w| Cbor.encode_tagged(37, bytes, w)
 }
 
 ## A key that is a number or text: Cbor.peek picks the reader.
 Key := [Number(U64), Name(Str)].{
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Key, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Key, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => Cbor.parse_u64(encoding, state).map_ok(|n| { value: Key.Number(n.value), rest: n.rest })
@@ -54,7 +53,7 @@ Key := [Number(U64), Name(Str)].{
 
 ## An action of a peer in upper snake case, "NOT_FOUND": Cbor.parse_union gives the type its own tag name case.
 Action := [Create, NotFound].{
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Action, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		options : Cbor.UnionOptions
 		options = { tags: Upper }
@@ -88,7 +87,7 @@ main! = |args| {
 		# 2^53 + 1: above the safe integers of JS. The `args` keep the value unknown at compile time.
 		size: 9_007_199_254_740_993 + args.len(),
 		tags: ["cbor", "codec"],
-		digest: Cbor.Bytes.([0xde, 0xad]),
+		digest: [0xde, 0xad],
 		license: Ok("UPL-1.0"),
 	}
 	bytes = to_cbor(pkg)
@@ -97,7 +96,7 @@ main! = |args| {
 	parsed : Try(Pkg, _)
 	parsed = from_cbor(bytes)
 	match parsed {
-		Ok(p) => echo!("parse: same=${Str.inspect(p == pkg)} size=${p.size.to_str()} digest=${hex(p.digest.to_list())}\n")
+		Ok(p) => echo!("parse: same=${Str.inspect(p == pkg)} size=${p.size.to_str()} digest=${hex(p.digest)}\n")
 		Err(InvalidCbor(pos)) => echo!("parse: invalid CBOR at ${pos.to_str()}\n")
 		Err(MissingRequiredField(name)) => echo!("parse: missing field ${name}\n")
 	}
@@ -105,11 +104,19 @@ main! = |args| {
 	# A JS object with camelCase keys: { userId: 7, displayName: "Ann" }
 	js = [0xa2, 0x66, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x07, 0x6b, 0x64, 0x69, 0x73, 0x70, 0x6c, 0x61, 0x79, 0x4e, 0x61, 0x6d, 0x65, 0x63, 0x41, 0x6e, 0x6e]
 	user : Try({ user_id : U64, display_name : Str }, _)
-	user = Cbor.parse_camel(js)
-	echo!("parse_camel: ${Str.inspect(user)}\n")
+	user = Cbor.parse_with(js, { fields: Camel })
+	echo!("fields Camel: ${Str.inspect(user)}\n")
+
+	# The same keys on write: encode_with and the option fields. encode_try gives Err(CountMismatch)
+	# when an encoder_for of your own writes a wrong count of items.
+	write_options : Cbor.WriteOptions
+	write_options = { fields: Camel }
+	camel = Cbor.encode_with({ user_id: 7.U64 + args.len(), display_name: "Ann" }, write_options)
+	checked = Cbor.encode_try({ user_id: 7.U64 })
+	echo!("encode_with: ${Str.inspect(camel.map_ok(hex))} encode_try: ${Str.inspect(checked.map_ok(hex))}\n")
 
 	missing : Try({ user_id : U64, email : Str }, _)
-	missing = Cbor.parse_camel(js)
+	missing = Cbor.parse_with(js, { fields: Camel })
 	echo!("missing field: ${Str.inspect(missing)}\n")
 
 	# A peer that sends a 64-bit id as text, as SQL CAST(id AS TEXT) gives it.
@@ -120,12 +127,12 @@ main! = |args| {
 	text_row = { name: "a", id: id_text }
 	text_rows = Cbor.encode([text_row])
 	options : Cbor.Options
-	options = { fields: Snake, int_from_text: Bool.True }
+	options = { allow: [IntFromText] }
 	rows : Try(List({ name : Str, id : I64 }), _)
 	rows = Cbor.parse_with(text_rows, options)
 	echo!("parse_with: ${Str.inspect(rows)}\n")
 
-	# Without int_from_text, the text is an error. path_at names the field of the error.
+	# Without IntFromText, the text is an error. path_at names the field of the error.
 	plain : Try(List({ name : Str, id : I64 }), _)
 	plain = Cbor.parse(text_rows)
 	match plain {
@@ -137,8 +144,8 @@ main! = |args| {
 		_ => echo!("path_at: no error\n")
 	}
 
-	# A D1 BLOB arrives as an array of numbers: Cbor.Bytes reads it. A Dec with no fraction is an integer.
-	blob : Try(Cbor.Bytes, _)
+	# A D1 BLOB arrives as an array of numbers: Cbor.U8Array reads it (a List(U8) with BytesFromArray). A Dec with no fraction is an integer.
+	blob : Try(Cbor.U8Array, _)
 	blob = Cbor.parse([0x82, 0x01, 0x18, 0xff])
 	echo!("blob: ${Str.inspect(blob)} params: ${hex(to_cbor([1, 2]))} ${hex(to_cbor([1.5]))}\n")
 
@@ -146,7 +153,7 @@ main! = |args| {
 	# {"name": "a", "note": null, "active": 1}. The `args` keep the value unknown at compile time.
 	sql_row = [0xa3, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x61, 0x61, 0x64, 0x6e, 0x6f, 0x74, 0x65, 0xf6, 0x66, 0x61, 0x63, 0x74, 0x69, 0x76, 0x65, 0x01].concat(List.repeat(0x00, args.len()))
 	row : Try({ name : Str, note ?: Str, active : Bool }, _)
-	row = Cbor.parse(sql_row)
+	row = Cbor.parse_with(sql_row, { allow: Cbor.sql_rows })
 	match row {
 		Ok(r) => echo!("sql row: name=${r.name} note=${Str.inspect(r.?note)} active=${Str.inspect(r.active)}\n")
 		Err(e) => echo!("sql row: ${Str.inspect(e)}\n")
@@ -162,23 +169,20 @@ main! = |args| {
 	any = Cbor.parse([0xc1, 0x1a, 0x51, 0x4b, 0x67, 0xb0])
 	echo!("tags: id=${Str.inspect(tagged.map_ok(|t| t.id == id))} keys=${Str.inspect(keys.is_ok())} any=${Str.inspect(any)}\n")
 
-	# A peer with tags of its own: tag 6 before null is no value, tag 10 before text is a decimal.
+	# A peer with tags of its own: tag 6 before null is a null, tag 10 before text is a decimal.
 	# {"price": 10("4E+1"), "note": 6(null)}. The `args` keep the value unknown at compile time.
 	peer_row = [0xa2, 0x65, 0x70, 0x72, 0x69, 0x63, 0x65, 0xca, 0x64, 0x34, 0x45, 0x2b, 0x31, 0x64, 0x6e, 0x6f, 0x74, 0x65, 0xc6, 0xf6].concat(List.repeat(0x00, args.len()))
-	priced : Try({ price : Dec, note ?: Str }, _)
-	priced = Cbor.parse_with(peer_row, { ignore_tags: [6, 10], dec_from_text: Bool.True })
+	priced : Try({ price : Dec, note : Try(Str, [Null]) }, _)
+	priced = Cbor.parse_with(peer_row, { ignore_tags: [6, 10], allow: [DecFromText] })
 	match priced {
-		Ok(p) => echo!("peer row: price=${p.price.to_str()} note=${Str.inspect(p.?note)}\n")
+		Ok(p) => echo!("peer row: price=${p.price.to_str()} note=${Str.inspect(p.note)}\n")
 		Err(e) => echo!("peer row: ${Str.inspect(e)}\n")
 	}
 
 	# A peer with an internal tag: {"action": "NOT_FOUND", "pay": {"kind": "Check", "value": 7}}.
-	notice_bytes = Cbor.encode(
-		Cbor.Value.Map([
-			(Text("action"), Text("NOT_FOUND")),
-			(Text("pay"), Map([(Text("kind"), Text("Check")), (Text("value"), Int(7 + args.len().to_i128()))])),
-		]),
-	)
+	# A Cbor.ValueMap has no duplicate key: `insert` sets a key, `from_list` gives Err(DuplicateKey(key)).
+	payment = Cbor.ValueMap.empty().insert(Text("kind"), Text("Check")).insert(Text("value"), Int(Cbor.IntValue.from_u64(7 + args.len())))
+	notice_bytes = Cbor.encode(Cbor.Value.Map(Cbor.ValueMap.empty().insert(Text("action"), Text("NOT_FOUND")).insert(Text("pay"), Map(payment))))
 	layout : Cbor.Unions
 	layout = Internal({ tag: "kind", content: "value" })
 	notice : Try({ action : Action, pay : [Cash, Check(U64)] }, _)
@@ -188,6 +192,15 @@ main! = |args| {
 		Ok(_) => echo!("unions: other action\n")
 		Err(e) => echo!("unions: ${Str.inspect(e)}\n")
 	}
+
+	# A CBOR sequence (RFC 8742), one item at the start of the bytes, and an item kept as its exact bytes.
+	seq : Try(List(Str), _)
+	seq = Cbor.parse_sequence([0x61, 0x61, 0x61, 0x62].concat(List.repeat(0x60, args.len())))
+	prefix : Try({ value : U64, rest : List(U8) }, _)
+	prefix = Cbor.parse_prefix([0x18, 0x2a, 0xff, 0xfe])
+	signed : Try({ payload : Cbor.Raw, sig : List(U8) }, _)
+	signed = Cbor.parse([0xa2, 0x67, 0x70, 0x61, 0x79, 0x6c, 0x6f, 0x61, 0x64, 0x82, 0x01, 0x02, 0x63, 0x73, 0x69, 0x67, 0x41, 0x09])
+	echo!("sequence: ${Str.inspect(seq)} prefix: ${Str.inspect(prefix)} raw payload: ${Str.inspect(signed.map_ok(|r| r.payload.to_bytes()))}\n")
 
 	extra : Try(U64, _)
 	extra = Cbor.parse([0x01, 0x02])

@@ -36,6 +36,17 @@ reads = |value, h| {
 	}
 }
 
+## The hex text `h` parses to `value` with the lenient reads `allow`.
+reads_with : a, Str, List(Cbor.Leniency) -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+reads_with = |value, h, allow| {
+	r : Try(a, _)
+	r = Cbor.parse_with(hex(h), { allow: allow })
+	match r {
+		Ok(v) => v == value
+		Err(_) => Bool.False
+	}
+}
+
 ## Both: the shortest form of the RFC.
 both : a, Str -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable([InvalidCbor(U64), ..errs]), a.Cbor.Encodable([])]
 both = |value, h| writes(value, h) and reads(value, h)
@@ -124,15 +135,19 @@ expect error_at(0.I32, "3a80000000") == Ok(0)
 expect error_at(0.I64, "1b8000000000000000") == Ok(0)
 expect error_at(0.I64, "3bffffffffffffffff") == Ok(0)
 
-# Any width of the argument is read, also when it is longer than needed
+# A head longer than needed is an error (RFC 8949 4.2.1). With `PaddedNumbers`, any width of the argument is read.
 
-expect reads(0.U64, "1800")
-expect reads(10.U64, "180a")
-expect reads(1.U64, "190001")
-expect reads(1.U64, "1a00000001")
-expect reads(1.U64, "1b0000000000000001")
-expect reads(-1.I64, "3800")
-expect reads(-1.I64, "3b0000000000000000")
+expect reads_with(0.U64, "1800", [PaddedNumbers])
+expect reads_with(10.U64, "180a", [PaddedNumbers])
+expect reads_with(1.U64, "190001", [PaddedNumbers])
+expect reads_with(1.U64, "1a00000001", [PaddedNumbers])
+expect reads_with(1.U64, "1b0000000000000001", [PaddedNumbers])
+expect reads_with(-1.I64, "3800", [PaddedNumbers])
+expect reads_with(-1.I64, "3b0000000000000000", [PaddedNumbers])
+expect error_at(0.U64, "1800") == Ok(0)
+expect error_at(0.U64, "190001") == Ok(0)
+expect error_at(0.U64, "1b0000000000000001") == Ok(0)
+expect error_at(0.I64, "3800") == Ok(0)
 
 # Bignums (tags 2 and 3) are not in the profile
 
@@ -164,36 +179,48 @@ expect reads_f64(F64.infinity, "fb7ff0000000000000")
 expect reads_nan("fb7ff8000000000000")
 expect reads_f64(-F64.infinity, "fbfff0000000000000")
 
-# An f64 is always written in 9 bytes (the profile does not shorten it)
+# A float is written in the shortest of f16, f32 and f64 that holds the same value (preferred serialization, RFC 8949 4.1).
+# These are all the float vectors of Appendix A.
 
-expect writes(0.0.F64, "fb0000000000000000")
-expect writes(-0.0.F64, "fb8000000000000000")
-expect writes(1.0.F64, "fb3ff0000000000000")
+expect writes(0.0.F64, "f90000")
+expect writes(-0.0.F64, "f98000")
+expect writes(1.0.F64, "f93c00")
 expect writes(1.1.F64, "fb3ff199999999999a")
+expect writes(1.5.F64, "f93e00")
+expect writes(65504.0.F64, "f97bff")
+expect writes(100000.0.F64, "fa47c35000")
+expect writes(3.4028234663852886e38.F64, "fa7f7fffff")
 expect writes(1.0e300.F64, "fb7e37e43c8800759c")
+expect writes(5.960464477539063e-8.F64, "f90001")
+expect writes(0.00006103515625.F64, "f90400")
+expect writes(-4.0.F64, "f9c400")
 expect writes(-4.1.F64, "fbc010666666666666")
-expect writes(F64.infinity, "fb7ff0000000000000")
-expect writes(-F64.infinity, "fbfff0000000000000")
+expect writes(F64.infinity, "f97c00")
+expect writes(F64.nan, "f97e00")
+expect writes(-F64.infinity, "f9fc00")
 
-# An f32 is written in 5 bytes, and read from f16, f32 and f64
+# An F32 is written in the shortest of f16 and f32, and read from f16, f32 and f64
 
 expect writes(100000.0.F32, "fa47c35000")
 expect writes(3.4028234663852886e38.F32, "fa7f7fffff")
-expect writes(-4.0.F32, "fac0800000")
+expect writes(-4.0.F32, "f9c400")
+expect writes(F32.nan, "f97e00")
 expect reads(100000.0.F32, "fa47c35000")
 expect reads(1.5.F32, "f93e00")
 expect reads(-4.0.F32, "f9c400")
 expect reads(1.5.F32, "fb3ff8000000000000")
 
-# An integer is read as a float. A float with no fraction is read as an integer only when its
-# size is 2^53 - 1 or less: a larger float can be the rounded value of many integers.
+# An integer is read as a float when the float is exact. With `FloatToInt`, a float with no fraction is read as an
+# integer only when its size is 2^53 - 1 or less: a larger float can be the rounded value of many integers.
 
 expect reads(100.0.F64, "1864")
 expect reads(-1.0.F64, "20")
-expect reads(1.U64, "f93c00")
-expect reads(9007199254740991.U64, "fb433fffffffffffff")
+expect reads_with(1.U64, "f93c00", [FloatToInt])
+expect reads_with(9007199254740991.U64, "fb433fffffffffffff", [FloatToInt])
+expect reads_with(-4.I64, "f9c400", [FloatToInt])
+expect error_at(0.U64, "f93c00") == Ok(0)
+expect error_at(0.I64, "f9c400") == Ok(0)
 expect error_at(0.U64, "fb4340000000000000") == Ok(0)
-expect reads(-4.I64, "f9c400")
 expect error_at(0.U64, "f93e00") == Ok(0)
 expect error_at(0.U64, "f97e00") == Ok(0)
 expect error_at(0.U64, "f97c00") == Ok(0)
@@ -207,7 +234,7 @@ expect error_at(Bool.False, "f6") == Ok(0)
 expect error_at(Bool.False, "f0") == Ok(0)
 expect error_at(Bool.False, "f8ff") == Ok(0)
 
-# null and undefined both read as the `Null` of a `Try`
+# null reads as the `Null` of a `Try`. undefined does too with `UndefinedAsNull`.
 
 null_u64 : Try(U64, [Null])
 null_u64 = Err(Null)
@@ -216,7 +243,8 @@ five_u64 : Try(U64, [Null])
 five_u64 = Ok(5)
 
 expect both(null_u64, "f6")
-expect reads(null_u64, "f7")
+expect reads_with(null_u64, "f7", [UndefinedAsNull])
+expect error_at(null_u64, "f7") == Ok(0)
 expect reads(five_u64, "05")
 expect error_at(0.U64, "f6") == Ok(0)
 expect error_at(0.U64, "f7") == Ok(0)
@@ -234,14 +262,19 @@ expect writes(Str.repeat("a", 24), "78186161616161616161616161616161616161616161
 expect error_at("", "62c328") == Ok(0)
 expect error_at("", "4161") == Ok(0)
 
-# Byte strings, major type 2: `Cbor.Bytes` and `List(U8)` read them
+# Byte strings, major type 2: a `List(U8)` reads and writes them. An empty one writes an empty array, which reads back.
+# A non-empty array needs `BytesFromArray`.
 
-expect both(Cbor.Bytes.([]), "40")
-expect both(Cbor.Bytes.([1, 2, 3, 4]), "4401020304")
-expect reads([1.U8, 2, 3, 4], "4401020304")
-expect writes([1.U8, 2, 3, 4], "8401020304")
-expect error_at(Cbor.Bytes.([]), "6161") == Ok(0)
-expect reads(Cbor.Bytes.([1, 2, 3]), "83010203")
+empty_u8 : List(U8)
+empty_u8 = []
+
+expect reads(empty_u8, "40")
+expect both(empty_u8, "80")
+expect both([1.U8, 2, 3, 4], "4401020304")
+expect error_at(empty_u8, "6161") == Ok(0)
+expect reads_with([1.U8, 2, 3], "83010203", [BytesFromArray])
+expect error_at(empty_u8, "83010203") == Ok(0)
+expect both(Cbor.U8Array.([1, 2, 3]), "83010203")
 
 # Arrays, major type 4
 
@@ -256,12 +289,11 @@ expect both([1.U64, 2, 3], "83010203")
 expect both((1.U64, [2.U64, 3], [4.U64, 5]), "8301820203820405")
 expect both(("a", { b: "c" }), "826161a161626163")
 
-# 25 items: the profile reads the 1-byte argument of the RFC, and writes a 2-byte argument
-# (the head of a container has room for 25 or more items).
+# 25 items: the 1-byte argument of the RFC. A 2-byte argument needs `PaddedNumbers`.
 
-expect reads(one_to_25, "98190102030405060708090a0b0c0d0e0f101112131415161718181819")
-expect writes(one_to_25, "9900190102030405060708090a0b0c0d0e0f101112131415161718181819")
-expect reads(one_to_25, "9900190102030405060708090a0b0c0d0e0f101112131415161718181819")
+expect both(one_to_25, "98190102030405060708090a0b0c0d0e0f101112131415161718181819")
+expect reads_with(one_to_25, "9900190102030405060708090a0b0c0d0e0f101112131415161718181819", [PaddedNumbers])
+expect error_at(one_to_25, "9900190102030405060708090a0b0c0d0e0f101112131415161718181819") == Ok(0)
 
 # A tuple of the wrong length is an error
 
@@ -285,8 +317,8 @@ expect error_at({ a: 1.U64 }, "a201020304") == Ok(1)
 expect error_at("", "c074323031332d30332d32315432303a30343a30305a") == Ok(0)
 expect error_at(0.U64, "c11a514b67b0") == Ok(0)
 expect error_at(0.0.F64, "c1fb41d452d9ec200000") == Ok(0)
-expect error_at(Cbor.Bytes.([]), "d74401020304") == Ok(0)
-expect error_at(Cbor.Bytes.([]), "d818456449455446") == Ok(0)
+expect error_at(empty_u8, "d74401020304") == Ok(0)
+expect error_at(empty_u8, "d818456449455446") == Ok(0)
 expect error_at("", "d82076687474703a2f2f7777772e6578616d706c652e636f6d") == Ok(0)
 
 # ...but a tagged value in a field that the record does not have is skipped
@@ -297,7 +329,7 @@ expect reads({ n: 1.U64 }, "a265657874726181a1616b4401020304616e01")
 
 # Indefinite lengths are not in the profile: an error at the first byte
 
-expect error_at(Cbor.Bytes.([]), "5f42010243030405ff") == Ok(0)
+expect error_at(empty_u8, "5f42010243030405ff") == Ok(0)
 expect error_at("", "7f657374726561646d696e67ff") == Ok(0)
 expect error_at(empty_u64, "9fff") == Ok(0)
 expect error_at((1.U64, [2.U64, 3], [4.U64, 5]), "9f018202039f0405ffff") == Ok(0)
@@ -323,10 +355,10 @@ expect error_at(0.U64, "") == Ok(0)
 expect error_at(0.U64, "18") == Ok(0)
 expect error_at(0.U64, "1b00") == Ok(0)
 expect error_at("", "6449") == Ok(0)
-# An array with more items than bytes is an error at its head, before the parser makes the list
+# The bytes end in an array: the error is at the head of the innermost open array (one truncation rule).
+# The walk runs before the parser makes the list, so a large count gives no large list.
 expect error_at(empty_u64, "8301") == Ok(0)
-# A count that fits the bytes, with an item that does not, is an error where the item is missing
-expect error_at(empty_u64, "821818") == Ok(3)
+expect error_at(empty_u64, "821818") == Ok(0)
 
 # Bytes after the value are an error at the position of the first one
 

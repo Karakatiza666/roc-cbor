@@ -10,7 +10,7 @@ app [] { pkg: "../src/main.roc" }
 
 import pkg.Cbor
 
-## A List(U8) is an array of integers. It reads back, also at the bounds 0 and 255.
+## A List(U8) is a byte string. It reads back, also at the bounds 0 and 255.
 expect {
 	v = [0.U8, 1, 127, 128, 255]
 	r : Try(List(U8), _)
@@ -27,16 +27,16 @@ expect {
 	r == Ok(v)
 }
 
-## Cbor.Bytes reads an array of integers 0 to 255 (a D1 BLOB).
+## Cbor.U8Array reads an array of integers 0 to 255 (a D1 BLOB).
 expect {
-	r : Try(Cbor.Bytes, _)
+	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x83, 0x00, 0x18, 0xff, 0x05])
 	r.map_ok(|b| b.to_list()) == Ok([0, 255, 5])
 }
 
-## Cbor.Bytes: 256 in the array is an error at that item (position 1).
+## Cbor.U8Array: 256 in the array is an error at that item (position 1).
 expect {
-	r : Try(Cbor.Bytes, _)
+	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0x19, 0x01, 0x00])
 	r.map_ok(|b| b.to_list()) == Err(InvalidCbor(1))
 }

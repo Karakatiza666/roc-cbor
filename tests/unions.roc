@@ -12,16 +12,24 @@ import pkg.Cbor
 t : Str -> Cbor.Value
 t = |s| Text(s)
 
-n : I128 -> Cbor.Value
-n = |i| Int(i)
+n : I64 -> Cbor.Value
+n = |i| Int(Cbor.IntValue.from_i64(i))
+
+## A Cbor.Value map of distinct keys.
+any_map : List((Cbor.Value, Cbor.Value)) -> Cbor.Value
+any_map = |pairs|
+	match Cbor.ValueMap.from_list(pairs) {
+		Ok(m) => Cbor.Value.Map(m)
+		Err(_) => crash "a duplicate key in a test map"
+	}
 
 ## The bytes of a map with text keys.
 map : List((Str, Cbor.Value)) -> List(U8)
-map = |pairs| Cbor.encode(Cbor.Value.Map(pairs.map(|(k, v)| (t(k), v))))
+map = |pairs| Cbor.encode(obj(pairs))
 
 ## A map with text keys, as a Cbor.Value.
 obj : List((Str, Cbor.Value)) -> Cbor.Value
-obj = |pairs| Cbor.Value.Map(pairs.map(|(k, v)| (t(k), v)))
+obj = |pairs| any_map(pairs.map(|(k, v)| (t(k), v)))
 
 kind : Cbor.Unions
 kind = Internal({ tag: "kind", content: "value" })
@@ -119,7 +127,7 @@ expect {
 				obj([("kind", t("Tags")), ("value", Array([t("x"), t("y")]))]),
 				obj([("kind", t("Pos")), ("value", Array([n(1), n(-2)]))]),
 				obj([("kind", t("Name")), ("value", t("ann"))]),
-				obj([("kind", t("On")), ("value", n(1))]),
+				obj([("kind", t("On")), ("value", Bool(Bool.True))]),
 				obj([("kind", t("Price")), ("value", n(5))]),
 				obj([("kind", t("Maybe")), ("value", Null)]),
 			]),
@@ -129,21 +137,21 @@ expect {
 	r == Ok([Tags(["x", "y"]), Pos((1, -2)), Name("ann"), On(Bool.True), Price(5), Maybe(Err(Null))])
 }
 
-## A Cbor.Value and Cbor.Bytes.
+## A Cbor.Value and a List(U8).
 expect {
-	r : Try(List([Any(Cbor.Value), Blob(Cbor.Bytes)]), _)
+	r : Try(List([Any(Cbor.Value), Blob(List(U8))]), _)
 	r = Cbor.parse_with(
 		Cbor.encode(Cbor.Value.Array([obj([("kind", t("Any")), ("value", Tag(6, n(1)))]), obj([("kind", t("Blob")), ("value", Bytes([1, 2]))])])),
 		internal,
 	)
-	r == Ok([Any(Tag(6, n(1))), Blob(Cbor.Bytes.([1, 2]))])
+	r == Ok([Any(Tag(6, n(1))), Blob([1, 2])])
 }
 
 ## A type of an app that reads a tag (Cbor.parse_cbor_tag) or picks its reader (Cbor.peek).
 Id := U64.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Id, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
@@ -157,7 +165,7 @@ Id := U64.{
 Cell := [Number(I64), Word(Str)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Cell, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {
@@ -233,14 +241,27 @@ expect {
 ## Camel field names and integers from text, also in a record payload.
 expect {
 	r : Try([Card({ last_four : U64 })], _)
-	r = Cbor.parse_with(map([("kind", t("Card")), ("lastFour", t("42"))]), { unions: kind, fields: Camel, int_from_text: Bool.True })
+	r = Cbor.parse_with(map([("kind", t("Card")), ("lastFour", t("42"))]), { unions: kind, fields: Camel, allow: [IntFromText] })
 	r == Ok(Card({ last_four: 42 }))
 }
 
-## A null value in a record payload is no key (rule N1).
+## A null value in a record payload goes to the field: `Err(Null)`, else an error at the null (the map is 12 bytes before it).
+## With `NullAsAbsent` it is no key.
+expect {
+	r : Try([Card({ last4 : Try(Str, [Null]) })], _)
+	r = Cbor.parse_with(map([("kind", t("Card")), ("last4", Null)]), internal)
+	r == Ok(Card({ last4: Err(Null) }))
+}
+
 expect {
 	r : Try([Card({ last4 : Try(Str, [Missing]) })], _)
 	r = Cbor.parse_with(map([("kind", t("Card")), ("last4", Null)]), internal)
+	r == Err(InvalidCbor(17))
+}
+
+expect {
+	r : Try([Card({ last4 : Try(Str, [Missing]) })], _)
+	r = Cbor.parse_with(map([("kind", t("Card")), ("last4", Null)]), { unions: kind, allow: [NullAsAbsent] })
 	r == Ok(Card({ last4: Err(Missing) }))
 }
 
@@ -306,7 +327,7 @@ expect {
 ## A key that is not text in the map, before the tag key: an error at the map.
 expect {
 	r : Try(Pay, _)
-	r = Cbor.parse_with(Cbor.encode(Cbor.Value.Map([(n(1), n(2)), (t("kind"), t("Cash"))])), internal)
+	r = Cbor.parse_with(Cbor.encode(any_map([(n(1), n(2)), (t("kind"), t("Cash"))])), internal)
 	r == Err(InvalidCbor(0))
 }
 
@@ -345,7 +366,7 @@ expect Cbor.encode(Check(7)) == map([("Check", n(7))])
 Action := [Create, Update, NotFound, V2].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Action, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Action.(parsed.value), rest: parsed.rest })
@@ -356,7 +377,7 @@ Action := [Create, Update, NotFound, V2].{
 Op := [Add({ path : Str, value : I64 }), Remove({ path : Str }), MoveTo({ from : Str, path : Str })].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Op, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: Internal({ tag: "op", content: "value" }), tags: Lower }, state)?
 		Ok({ value: Op.(parsed.value), rest: parsed.rest })
@@ -431,7 +452,7 @@ expect {
 Step := [Run(Pay), Stop].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Step, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Step, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: External, tags: Upper }, state)?
 		Ok({ value: Step.(parsed.value), rest: parsed.rest })
@@ -451,7 +472,7 @@ expect {
 Wrapper := { a : [Create, Delete] }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Wrapper, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Wrapper, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Wrapper.(parsed.value), rest: parsed.rest })
@@ -470,7 +491,7 @@ expect {
 Mode := [Fast, SlowDown(U64)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Mode, rest : Cbor.State }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Mode, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Lower }, state)?
 		Ok({ value: Mode.(parsed.value), rest: parsed.rest })

@@ -1,8 +1,8 @@
 app [] { pkg: "../src/main.roc" }
 
 # CBOR tags and dynamic values (0.3.0), through the public API of the package.
-# The building blocks: Cbor.parse_cbor_tag, Cbor.encode_cbor_tag, Cbor.peek, Cbor.parse_item,
-# Cbor.encode_item, Cbor.Value, and the options ignore_tags and dec_from_text.
+# The building blocks: Cbor.parse_cbor_tag, Cbor.encode_tagged, Cbor.peek, Cbor.parse_item,
+# Cbor.encode_item, Cbor.Value, and the option ignore_tags and the lenient read DecFromText.
 # The types of this file are types of an app: the package has no type for a tag of its own.
 # The tags 6, 10, 12 and 88 are unassigned in the IANA registry, so a peer can use them for its own types.
 
@@ -29,7 +29,7 @@ hex = |s|
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Uuid, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		bytes = Cbor.parse_bytes(encoding, tag.rest)?
@@ -40,33 +40,27 @@ Uuid := List(U8).{
 		}
 	}
 
-	encoder_for : Cbor -> (Uuid, List(U8) -> Try(List(U8), []))
-	encoder_for = |_| |Uuid.(bytes), out| {
-		tagged = Cbor.encode_cbor_tag(37, out)?
-		Cbor.encode_item(Cbor.Bytes.(bytes), tagged)
-	}
+	encoder_for : Cbor -> (Uuid, Cbor.Writer -> Try(Cbor.Writer, []))
+	encoder_for = |_| |Uuid.(bytes), w| Cbor.encode_tagged(37, bytes, w)
 }
 
 ## A time of a peer: a private tag 12 and the array `[seconds, nanoseconds]`.
 Instant := { secs : I64, nanos : U32 }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Instant, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Instant, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 12 {
 			return Err(Cbor.invalid_value(encoding, state))
 		}
-		pair : { value : (I64, U32), rest : Cbor.State }
+		pair : { value : (I64, U32), rest : Cbor.Reader }
 		pair = Cbor.parse_item(encoding, tag.rest)?
 		Ok({ value: Instant.{ secs: pair.value.0, nanos: pair.value.1 }, rest: pair.rest })
 	}
 
-	encoder_for : Cbor -> (Instant, List(U8) -> Try(List(U8), []))
-	encoder_for = |_| |Instant.{ secs, nanos }, out| {
-		tagged = Cbor.encode_cbor_tag(12, out)?
-		Cbor.encode_item((secs, nanos), tagged)
-	}
+	encoder_for : Cbor -> (Instant, Cbor.Writer -> Try(Cbor.Writer, []))
+	encoder_for = |_| |Instant.{ secs, nanos }, w| Cbor.encode_tagged(12, (secs, nanos), w)
 }
 
 ## A point of a peer: a private tag 88 and the array `[x, y]`. A geometry type is a type of the app:
@@ -74,13 +68,13 @@ Instant := { secs : I64, nanos : U32 }.{
 Point := { x : F64, y : F64 }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Point, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Point, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 88 {
 			return Err(Cbor.invalid_value(encoding, state))
 		}
-		xy : { value : (F64, F64), rest : Cbor.State }
+		xy : { value : (F64, F64), rest : Cbor.Reader }
 		xy = Cbor.parse_item(encoding, tag.rest)?
 		Ok({ value: Point.{ x: xy.value.0, y: xy.value.1 }, rest: xy.rest })
 	}
@@ -90,29 +84,26 @@ Point := { x : F64, y : F64 }.{
 Link := { table : Str, key : Cbor.Value }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Link, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Link, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 8 {
 			return Err(Cbor.invalid_value(encoding, state))
 		}
-		pair : { value : (Str, Cbor.Value), rest : Cbor.State }
+		pair : { value : (Str, Cbor.Value), rest : Cbor.Reader }
 		pair = Cbor.parse_item(encoding, tag.rest)?
 		Ok({ value: Link.{ table: pair.value.0, key: pair.value.1 }, rest: pair.rest })
 	}
 
-	encoder_for : Cbor -> (Link, List(U8) -> Try(List(U8), []))
-	encoder_for = |_| |Link.{ table, key }, out| {
-		tagged = Cbor.encode_cbor_tag(8, out)?
-		Cbor.encode_item((table, key), tagged)
-	}
+	encoder_for : Cbor -> (Link, Cbor.Writer -> Try(Cbor.Writer, []))
+	encoder_for = |_| |Link.{ table, key }, w| Cbor.encode_tagged(8, (table, key), w)
 }
 
 ## A value that is one of several types, picked with Cbor.peek.
 Cell := [Number(I64), Word(Str), When(Instant), Nothing].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Cell, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {
@@ -132,7 +123,7 @@ Cell := [Number(I64), Word(Str), When(Instant), Nothing].{
 		}
 }
 
-# parse_cbor_tag and encode_cbor_tag in a type of an app
+# parse_cbor_tag and encode_tagged in a type of an app
 
 uuid_bytes : List(U8)
 uuid_bytes = hex("d8255000112233445566778899aabbccddeeff")
@@ -164,11 +155,17 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
-## A tag with a head of 1 to 8 bytes: 12 in 1 byte (cc) and in 8 bytes (db 00..0c).
+## A tag with a head of 1 to 8 bytes: 12 in 1 byte (cc) and, with `PaddedNumbers`, in 8 bytes (db 00..0c).
+expect {
+	r : Try(List(Instant), _)
+	r = Cbor.parse_with(hex("82cc821a690168a01a1dcd6500db000000000000000c820100"), { allow: [PaddedNumbers] })
+	r == Ok([Instant.{ secs: 1761700000, nanos: 500000000 }, Instant.{ secs: 1, nanos: 0 }])
+}
+
 expect {
 	r : Try(List(Instant), _)
 	r = Cbor.parse(hex("82cc821a690168a01a1dcd6500db000000000000000c820100"))
-	r == Ok([Instant.{ secs: 1761700000, nanos: 500000000 }, Instant.{ secs: 1, nanos: 0 }])
+	r == Err(InvalidCbor(13))
 }
 
 expect Cbor.encode(Instant.{ secs: 1761700000, nanos: 500000000 }) == hex("cc821a690168a01a1dcd6500")
@@ -250,7 +247,7 @@ expect {
 Kinds := List(Cbor.Kind).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Kinds, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Kinds, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| |state| {
 		start = Cbor.parse_list_start(encoding, state)?
 		match start {
@@ -259,7 +256,7 @@ Kinds := List(Cbor.Kind).{
 				var $kinds = []
 				for _ in (0.U64).until(len) {
 					$kinds = $kinds.append(Cbor.peek(encoding, $s)?)
-					item : { value : Cbor.Value, rest : Cbor.State }
+					item : { value : Cbor.Value, rest : Cbor.Reader }
 					item = Cbor.parse_item(encoding, $s)?
 					$s = item.rest
 				}
@@ -315,6 +312,14 @@ expect {
 
 # Cbor.Value
 
+## A Cbor.Value map of distinct keys.
+vmap : List((Cbor.Value, Cbor.Value)) -> Cbor.Value
+vmap = |pairs|
+	match Cbor.ValueMap.from_list(pairs) {
+		Ok(m) => Cbor.Value.Map(m)
+		Err(_) => crash "a duplicate key in a test map"
+	}
+
 value_of : Str -> Try(Cbor.Value, [InvalidCbor(U64)])
 value_of = |h| Cbor.parse(hex(h))
 
@@ -325,11 +330,11 @@ expect {
 		("1bffffffffffffffff", Cbor.Value.Int(18446744073709551615)),
 		("3bffffffffffffffff", Cbor.Value.Int(-18446744073709551616)),
 		("3863", Cbor.Value.Int(-100)),
-		("fb3ff8000000000000", Cbor.Value.Float(1.5)),
+		("f93e00", Cbor.Value.Float(1.5)),
 		("43010203", Cbor.Value.Bytes([1, 2, 3])),
 		("62c3bc", Cbor.Value.Text("\u(fc)")),
 		("820102", Cbor.Value.Array([Cbor.Value.Int(1), Cbor.Value.Int(2)])),
-		("a201020360", Cbor.Value.Map([(Cbor.Value.Int(1), Cbor.Value.Int(2)), (Cbor.Value.Int(3), Cbor.Value.Text(""))])),
+		("a201020360", vmap([(Cbor.Value.Int(1), Cbor.Value.Int(2)), (Cbor.Value.Int(3), Cbor.Value.Text(""))])),
 		("c11a514b67b0", Cbor.Value.Tag(1, Cbor.Value.Int(1363896240))),
 		("c6f6", Cbor.Value.Tag(6, Cbor.Value.Null)),
 		("f4", Cbor.Value.Bool(Bool.False)),
@@ -339,39 +344,33 @@ expect {
 		("f0", Cbor.Value.Simple(16)),
 		("f8ff", Cbor.Value.Simple(255)),
 		("80", Cbor.Value.Array([])),
-		("a0", Cbor.Value.Map([])),
+		("a0", Cbor.Value.Map(Cbor.ValueMap.empty())),
 	]
 	cases.all(|(h, v)| value_of(h) == Ok(v) and Cbor.encode(v) == hex(h))
 }
 
-## f16 and f32 read as a Float, and write as f64.
+## f16, f32 and f64 read as a Float, and write in the shortest form with the same value.
 expect value_of("f93e00") == Ok(Cbor.Value.Float(1.5))
 expect value_of("fa47c35000") == Ok(Cbor.Value.Float(100000.0))
-expect Cbor.encode(Cbor.Value.Float(1.5)) == hex("fb3ff8000000000000")
+expect value_of("fb3ff8000000000000") == Ok(Cbor.Value.Float(1.5))
+expect Cbor.encode(Cbor.Value.Float(1.5)) == hex("f93e00")
+expect Cbor.encode(Cbor.Value.Float(100000.0)) == hex("fa47c35000")
 
-## A tag of a tag, and a map with a key that is there two times: each stays, in order.
+## A tag of a tag stays. A map with a key that is there two times is an error at the second key (`duplicate_keys`).
 expect value_of("d820d8206161") == Ok(Cbor.Value.Tag(32, Cbor.Value.Tag(32, Cbor.Value.Text("a"))))
-expect value_of("a2616101616102") == Ok(Cbor.Value.Map([(Cbor.Value.Text("a"), Cbor.Value.Int(1)), (Cbor.Value.Text("a"), Cbor.Value.Int(2))]))
+expect value_of("a2616101616102") == Err(InvalidCbor(4))
 
 ## Nested arrays and maps close in the right order.
 expect {
-	v = Cbor.Value.Array([Cbor.Value.Map([(Cbor.Value.Text("k"), Cbor.Value.Array([Cbor.Value.Int(1), Cbor.Value.Tag(4, Cbor.Value.Array([]))]))]), Cbor.Value.Int(2), Cbor.Value.Array([Cbor.Value.Array([])])])
+	v = Cbor.Value.Array([vmap([(Cbor.Value.Text("k"), Cbor.Value.Array([Cbor.Value.Int(1), Cbor.Value.Tag(4, Cbor.Value.Array([]))]))]), Cbor.Value.Int(2), Cbor.Value.Array([Cbor.Value.Array([])])])
 	value_of("83a1616b8201c480028180") == Ok(v) and Cbor.encode(v) == hex("83a1616b8201c480028180")
 }
 
-## Int outside -2^64 to 2^64 - 1 writes as a bignum (tag 2 or 3), which reads back as a Tag.
-expect Cbor.encode(Cbor.Value.Int(18446744073709551616)) == hex("c249010000000000000000")
+## A bignum (tag 2 or 3) reads as a Tag. Int holds -2^64 to 2^64 - 1 only (tests/value.roc).
 expect value_of("c249010000000000000000") == Ok(Cbor.Value.Tag(2, Cbor.Value.Bytes([1, 0, 0, 0, 0, 0, 0, 0, 0])))
-expect Cbor.encode(Cbor.Value.Int(-18446744073709551617)) == hex("c349010000000000000000")
-
-## Simple(20) to Simple(23) are false, true, null and undefined. Simple(24) to Simple(31) are not valid: undefined.
-expect Cbor.encode(Cbor.Value.Simple(20)) == [0xf4]
-expect Cbor.encode(Cbor.Value.Simple(23)) == [0xf7]
-expect Cbor.encode(Cbor.Value.Simple(24)) == [0xf7]
 expect Cbor.encode(Cbor.Value.Simple(19)) == [0xf3]
 
 ## Equal when the bytes are equal.
-expect Cbor.Value.Simple(22) == Cbor.Value.Null
 expect Cbor.Value.Int(1) != Cbor.Value.Float(1.0)
 expect Cbor.Value.Float(0.0) != Cbor.Value.Float(-0.0)
 expect Cbor.Value.Float(F64.nan) == Cbor.Value.Float(F64.nan)
@@ -389,7 +388,8 @@ expect value_of("8201") == Err(InvalidCbor(0))
 expect value_of("82018181") == Err(InvalidCbor(3))
 expect value_of("82015f") == Err(InvalidCbor(2))
 expect value_of("f818") == Err(InvalidCbor(0))
-expect value_of("c6") == Err(InvalidCbor(1))
+# A tag with no item: the error is at the open tag (one truncation rule).
+expect value_of("c6") == Err(InvalidCbor(0))
 expect value_of("6261ff") == Err(InvalidCbor(0))
 expect value_of("0001") == Err(InvalidCbor(1))
 
@@ -398,9 +398,9 @@ expect value_of("9bffffffffffffffff") == Err(InvalidCbor(0))
 expect value_of("bb7fffffffffffffff") == Err(InvalidCbor(0))
 expect value_of("a3010203") == Err(InvalidCbor(0))
 
-## 100,000 nested arrays and 100,000 nested tags: a loop, not a recursion. The writer is a loop too.
+## 512 nested arrays and 512 nested tags (the depth limit) read and write back. With 100,000, the error is at the 513th head.
 expect {
-	deep = List.repeat(0x81, 100000).append(0x00)
+	deep = List.repeat(0x81, 512).append(0x00)
 	r = value_of_bytes(deep)
 	match r {
 		Ok(v) => Cbor.encode(v) == deep
@@ -409,18 +409,21 @@ expect {
 }
 
 expect {
-	deep = List.repeat(0xc1, 100000).append(0x00)
+	deep = List.repeat(0xc1, 512).append(0x00)
 	r = value_of_bytes(deep)
 	match r {
 		Ok(v) => Cbor.encode(v) == deep
 		Err(_) => Bool.False
 	}
 }
+
+expect value_of_bytes(List.repeat(0x81, 100000).append(0x00)) == Err(InvalidCbor(512))
+expect value_of_bytes(List.repeat(0xc1, 100000).append(0x00)) == Err(InvalidCbor(512))
 
 value_of_bytes : List(U8) -> Try(Cbor.Value, [InvalidCbor(U64)])
 value_of_bytes = |bytes| Cbor.parse(bytes)
 
-## A Cbor.Value field of a record: a null value is no key, as for any field.
+## A Cbor.Value field of a record: a null value is `Null`. With `NullAsAbsent` it is no key, as for any field.
 expect {
 	r : Try({ v : Cbor.Value, w : Try(Cbor.Value, [Missing]) }, _)
 	r = Cbor.parse(hex("a26176c2410161776161"))
@@ -430,6 +433,12 @@ expect {
 expect {
 	r : Try({ v : Cbor.Value }, _)
 	r = Cbor.parse(hex("a16176f6"))
+	r == Ok({ v: Cbor.Value.Null })
+}
+
+expect {
+	r : Try({ v : Cbor.Value }, _)
+	r = Cbor.parse_with(hex("a16176f6"), { allow: [NullAsAbsent] })
 	r == Err(MissingRequiredField("v"))
 }
 
@@ -451,10 +460,16 @@ expect {
 	r == Ok([Err(Null), Ok(1)])
 }
 
-## In a map read as a record: no key, the same as a null value (rule N1).
+## In a map read as a record: `Err(Null)` of a `Try(a, [Null])` field. With `NullAsAbsent`: no key, the same as a null value.
+expect {
+	r : Try({ name : Str, nick : Try(Str, [Null]) }, _)
+	r = Cbor.parse_with(hex("a2646e616d656141646e69636bc6f6"), tags6)
+	r == Ok({ name: "A", nick: Err(Null) })
+}
+
 expect {
 	r : Try({ name : Str, nick ?: Str, note : Try(Str, [Missing]) }, _)
-	r = Cbor.parse_with(hex("a3646e616d656141646e69636bc6f6646e6f7465c6f7"), tags6)
+	r = Cbor.parse_with(hex("a3646e616d656141646e69636bc6f6646e6f7465c6f7"), { ignore_tags: [6], allow: [NullAsAbsent, UndefinedAsNull] })
 	match r {
 		Ok(row) => row.name == "A" and row.?nick == Err(MissingField) and row.note == Err(Missing)
 		Err(_) => Bool.False
@@ -463,7 +478,7 @@ expect {
 
 expect {
 	r : Try({ name : Str, nick : Str }, _)
-	r = Cbor.parse_with(hex("a2646e616d656141646e69636bc6f6"), tags6)
+	r = Cbor.parse_with(hex("a2646e616d656141646e69636bc6f6"), { ignore_tags: [6], allow: [NullAsAbsent] })
 	r == Err(MissingRequiredField("nick"))
 }
 
@@ -488,9 +503,9 @@ expect {
 }
 
 expect {
-	r : Try({ a : U64, b : Str, c : List(Bool), d : F64, e : Cbor.Bytes, f : (U8, U8), g : [X, Y(U8)] }, _)
+	r : Try({ a : U64, b : Str, c : List(Bool), d : F64, e : List(U8), f : (U8, U8), g : [X, Y(U8)] }, _)
 	r = Cbor.parse_with(hex("a76161c6016162c661786163c681c6f56164c6fb3ff80000000000006165c641ff6166c682c601c6026167c6a16159c607"), { ignore_tags: [6] })
-	r == Ok({ a: 1, b: "x", c: [Bool.True], d: 1.5, e: Cbor.Bytes.([255]), f: (1, 2), g: Y(7) })
+	r == Ok({ a: 1, b: "x", c: [Bool.True], d: 1.5, e: [255], f: (1, 2), g: Y(7) })
 }
 
 ## A tag before the array of the payloads of a Roc tag: {"Z": 6([6(1), 6("a")])}.
@@ -530,7 +545,7 @@ expect {
 # Option dec_from_text
 
 dec_text : Str -> Try(Dec, [InvalidCbor(U64)])
-dec_text = |s| Cbor.parse_with(Cbor.encode(s), { dec_from_text: Bool.True })
+dec_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [DecFromText] })
 
 expect dec_text("12.50") == Ok(12.5)
 expect dec_text("4E+1") == Ok(40)
@@ -563,7 +578,7 @@ expect {
 ## dec_from_text does not change the other types: a U64 and a F64 do not read text.
 expect {
 	r : Try(U64, _)
-	r = Cbor.parse_with(Cbor.encode("1"), { dec_from_text: Bool.True })
+	r = Cbor.parse_with(Cbor.encode("1"), { allow: [DecFromText] })
 	r == Err(InvalidCbor(0))
 }
 
@@ -571,7 +586,7 @@ expect {
 ## The integers, the decimal fractions (tag 4) and the floats still read.
 expect {
 	r : Try(List(Dec), _)
-	r = Cbor.parse_with(hex("85ca6531322e3530ca6434452b3104c482211904e2f93e00"), { ignore_tags: [10], dec_from_text: Bool.True })
+	r = Cbor.parse_with(hex("85ca6531322e3530ca6434452b3104c482211904e2f93e00"), { ignore_tags: [10], allow: [DecFromText] })
 	r == Ok([12.5, 40, 4, 12.5, 1.5])
 }
 
@@ -580,10 +595,10 @@ expect {
 ## {"id": 8["person", "ada"], "at": 12[1761700000, 500000000], "price": 10"4E+1", "spot": 88[1.5, 2.5],
 ##  "uid": 37(h'00..ff'), "nick": 6(null), "extra": 12[0, 0]}
 expect {
-	Row : { id : Link, at : Instant, price : Dec, spot : Point, uid : Uuid, nick ?: Str }
+	Row : { id : Link, at : Instant, price : Dec, spot : Point, uid : Uuid, nick : Try(Str, [Null]) }
 	bytes = hex("a7626964c88266706572736f6e63616461626174cc821a690168a01a1dcd6500657072696365ca6434452b316473706f74d85882fb3ff8000000000000fb400400000000000063756964d8255000112233445566778899aabbccddeeff646e69636bc6f6656578747261cc820000")
 	r : Try(Row, _)
-	r = Cbor.parse_with(bytes, { ignore_tags: [6, 10], dec_from_text: Bool.True })
+	r = Cbor.parse_with(bytes, { ignore_tags: [6, 10], allow: [DecFromText] })
 	match r {
 		Ok(row) =>
 			row.id == Link.{ table: "person", key: Cbor.Value.Text("ada") }
@@ -591,7 +606,7 @@ expect {
 				and row.price == 40
 				and row.spot == Point.{ x: 1.5, y: 2.5 }
 				and row.uid == Uuid.(hex("00112233445566778899aabbccddeeff"))
-				and row.?nick == Err(MissingField)
+				and row.nick == Err(Null)
 		Err(_) => Bool.False
 	}
 }

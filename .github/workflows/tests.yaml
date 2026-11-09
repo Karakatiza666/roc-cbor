@@ -54,3 +54,38 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v7
         with: { name: fuzz-failures, path: .cache/fuzz/art-*, if-no-files-found: ignore }
+  # Complexity of the writer and the reader: each case must stay linear (n log n for a key sort).
+  # A smaller item budget keeps the job short; a complexity bug still gives a ratio of 4 or more.
+  scale:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-roc
+        with: { token: "${{ github.token }}", nightly-tag: "${{ inputs.roc-nightly || '' }}" }
+      - run: scripts/scale.sh 3
+        env: { SCALE_ITEMS: "200000" }
+  # Cbor.Value against Python cbor2 (pinned version).
+  differential:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-roc
+        with: { token: "${{ github.token }}", nightly-tag: "${{ inputs.roc-nightly || '' }}" }
+      - run: python3 -m venv .cache/venv && .cache/venv/bin/pip install cbor2==6.2.1
+      - run: scripts/differential.sh
+        env: { DIFF_STRICT: "1" }
+  # Speed against bench/baseline.txt. Report only: a shared runner is noisy and is not the baseline machine.
+  bench:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions: { contents: read }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-roc
+        with: { token: "${{ github.token }}", nightly-tag: "${{ inputs.roc-nightly || '' }}" }
+      - run: scripts/bench.sh --check 5

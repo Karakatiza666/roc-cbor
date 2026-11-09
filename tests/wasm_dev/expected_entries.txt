@@ -1,0 +1,2 @@
+# The cases of the second app of scripts/wasm_dev.sh (tests/wasm_dev/entries.roc): name, seed, checksum (from the speed build).
+entries_rows 2305 5548524182

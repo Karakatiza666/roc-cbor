@@ -1,0 +1,23 @@
+# bench/baseline.txt: written by scripts/bench.sh --update. Do not edit by hand.
+# head=9b675af date=2026-11-08 machine=x86_64 cpus=24 runs=7
+# case loops ms_per_loop normalized (ms / calib ms)
+calib 378 1.3903 1.0000
+bytes_encode 24242 0.0164 0.0118
+bytes_parse 1812598 0.0002 0.0001
+u8list_encode 12 29.2497 21.0384
+u8list_parse 11 30.9204 22.2401
+records_encode 48 10.1278 7.2846
+records_parse 15 24.3156 17.4895
+records_value 12 25.8036 18.5597
+camel_parse 7 46.5596 33.4889
+reject_parse 10 36.5785 26.3098
+unknown_parse 4 87.7480 63.1144
+unions_parse 23 11.7979 8.4859
+unions_content 25 14.2301 10.2353
+trees_parse 26 20.7228 14.9053
+deep_encode 7855 0.0501 0.0360
+deep_parse 4007 0.0888 0.0639
+dict_parse 9 49.9399 35.9202
+map_value 4 50.7847 36.5279
+path_map 29 13.3919 9.6324
+text_parse 108 3.2610 2.3455

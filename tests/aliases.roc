@@ -12,7 +12,7 @@ Id := U64.{
 	is_eq : _
 	encoder_for : _
 
-	parser_for : Cbor -> (Cbor.State -> Try({ value : Id, rest : Cbor.State }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
 	parser_for = |encoding| {
 		inner = U64.parser_for(encoding)
 		|state| {
@@ -65,7 +65,7 @@ expect {
 	ok == Ok({ id: 7, name: "a" }) and absent == Err("missing name") and wrong == Err("invalid at 0")
 }
 
-# Readable works for List(Row), List(I64), Cbor.Bytes and a closed custom parser
+# Readable works for List(Row), List(I64), List(U8) and a closed custom parser
 expect {
 	rows : Try(List(Row), Str)
 	rows = read_text(Cbor.encode([{ id: 1.U64, name: "a" }]))
@@ -73,26 +73,26 @@ expect {
 	missing_in_list = read_text(Cbor.encode([{ id: 1.U64 }]))
 	nums : Try(List(I64), Str)
 	nums = read_text(Cbor.encode([1.I64, -2]))
-	bytes : Try(Cbor.Bytes, Str)
-	bytes = read_text(Cbor.encode(Cbor.Bytes.([1, 2])))
+	bytes : Try(List(U8), Str)
+	bytes = read_text(Cbor.encode([1.U8, 2]))
 	id : Try(Id, Str)
 	id = read_text(Cbor.encode(5.U64))
 	bad_id : Try(Id, Str)
 	bad_id = read_text([0x61, 0x61])
-	rows == Ok([{ id: 1, name: "a" }]) and missing_in_list == Err("missing name") and nums == Ok([1, -2]) and bytes == Ok(Cbor.Bytes.([1, 2])) and id == Ok(Id.(5)) and bad_id == Err("invalid at 0")
+	rows == Ok([{ id: 1, name: "a" }]) and missing_in_list == Err("missing name") and nums == Ok([1, -2]) and bytes == Ok([1, 2]) and id == Ok(Id.(5)) and bad_id == Err("invalid at 0")
 }
 
-# Writable works for a record, a list, Cbor.Bytes and a custom type
+# Writable works for a record, a list, a List(U8) and a custom type
 expect {
 	rows = write_all([{ id: 1.U64, name: "a" }])
 	nums = write_all([[1.I64, 2]])
-	bytes = write_all([Cbor.Bytes.([1, 2])])
+	bytes = write_all([[1.U8, 2]])
 	ids = write_all([Id.(5)])
 	rows == [Cbor.encode({ id: 1.U64, name: "a" })] and nums == [[0x82, 0x01, 0x02]] and bytes == [[0x42, 0x01, 0x02]] and ids == [[0x05]]
 }
 
 # Writable and Readable in one function
-expect round_trips({ id: 7.U64, name: "a" }) and round_trips([1.I64, -2]) and round_trips(Cbor.Bytes.([9])) and round_trips(Id.(3))
+expect round_trips({ id: 7.U64, name: "a" }) and round_trips([1.I64, -2]) and round_trips([9.U8]) and round_trips(Id.(3))
 
 # a function with Readable calls a function with Parseable
 expect {
