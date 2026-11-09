@@ -1068,7 +1068,8 @@ Cbor :: {
 			ValueShape : v
 			key_shape = KeyShape.parser_for(entries.items.cbor)
 			value_shape = ValueShape.parser_for(entries.items.cbor)
-			push_entries(entries, chunk, |state| exact_key_with(state, key_shape), value_shape)
+			dups = key_dups(entries.items.rules)
+			push_entries(entries, chunk, |state| exact_key_with(state, key_shape, dups), value_shape)
 		}
 
 		## The end of the input: `Ok({})` when the map ended at the last byte, else the error of the cut entry or of
@@ -3042,9 +3043,15 @@ with_positions = |cbor, content, next| Cbor.{ fields: cbor.fields, read: cbor.re
 ## of a key (a float, text or `0` for a `Bool`, a bignum with a leading zero) is an error. So two keys of one map that
 ## are not the same `Cbor.Value` (the walk checked it) never give the same Roc key, and no key of the input is lost.
 exact_key : Cbor.Reader, { value : a, rest : Cbor.Reader } -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64)]) where [a.Cbor.Encodable([])]
-exact_key = |state, parsed| {
+exact_key = |state, parsed| exact_key_dups(state, parsed, Keep)
+
+## `exact_key` with the rule `dups` for the maps in the key (`canonical`). A key of `Cbor.Entries` can be a composite
+## type: with `duplicate_keys: First` or `Last` (`key_dups`), a map in the key is its `Cbor.Value`, with one entry of
+## each key, as the walk compares the keys. A key of a `Dict` is a number or a `Bool`, with no map: `Keep`.
+exact_key_dups : Cbor.Reader, { value : a, rest : Cbor.Reader }, [Keep, First, Last] -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64)]) where [a.Cbor.Encodable([])]
+exact_key_dups = |state, parsed, dups| {
 	written = Cbor.encode(parsed.value)
-	if canonical(state.bytes, state.pos, parsed.rest.pos) == canonical(written, 0, written.len()) {
+	if canonical(state.bytes, state.pos, parsed.rest.pos, dups) == canonical(written, 0, written.len(), Keep) {
 		Ok(parsed)
 	} else {
 		Err(InvalidCbor(state.pos))
@@ -4539,7 +4546,7 @@ order_keys = |bytes, a, a_end, b, b_end, rules|
 		}
 		ordered(la, lb)
 	} else {
-		order_bytes(deterministic(bytes, a, a_end), deterministic(bytes, b, b_end))
+		order_bytes(deterministic(bytes, a, a_end, key_dups(rules)), deterministic(bytes, b, b_end, key_dups(rules)))
 	}
 
 ## The key at `p` is an integer, or bytes or text of a definite length, with the shortest head: its bytes are its
@@ -4577,7 +4584,7 @@ dup_keys = |bytes, keys, rules| {
 			while $k < n {
 				start = keys.get(2 * $k) ?? 0
 				end = keys.get(2 * $k + 1) ?? 0
-				$kb = $kb.append(canonical(bytes, start, end))
+				$kb = $kb.append(canonical(bytes, start, end, key_dups(rules)))
 				$k = $k + 1
 			}
 			$kb
@@ -4768,21 +4775,36 @@ compare_bytes = |x, y| {
 ## The bytes of the items from `start` to `end` as `Cbor.encode` of their `Cbor.Value` writes them: the shortest
 ## heads, definite lengths, and each float as an f64. A simple value stays as it is. A loop with a list of the open
 ## arrays, maps and tags, not a recursion. An array or a map of indefinite length gets its head when its break comes:
-## its items go to a new output, which then goes after the head.
-canonical : List(U8), U64, U64 -> List(U8)
-canonical = |bytes, start, end| canonical_with(bytes, start, end, Bool.False)
+## its items go to a new output, which then goes after the head. `dups`: `Keep` gives each entry of each map, as the
+## bytes have it (the exact form of a key). `First` and `Last` give one entry of each key of a map, as the `Cbor.Value`
+## reader reads it with `duplicate_keys` (`key_dups`): so two keys are the same here when they are the same `Cbor.Value`.
+canonical : List(U8), U64, U64, [Keep, First, Last] -> List(U8)
+canonical = |bytes, start, end, dups| canonical_with(bytes, start, end, Bool.False, dups)
 
 ## The deterministic encoding of RFC 8949 4.2.1 of the items from `start` to `end`: `canonical` with the shortest float
 ## (`put_float`) in place of the f64. It is what `Cbor.encode` writes for the items as a `Cbor.Value`, so the order of
 ## `key_order: Sorted` on read is the order of `sort_maps` on write.
-deterministic : List(U8), U64, U64 -> List(U8)
-deterministic = |bytes, start, end| canonical_with(bytes, start, end, Bool.True)
+deterministic : List(U8), U64, U64, [Keep, First, Last] -> List(U8)
+deterministic = |bytes, start, end, dups| canonical_with(bytes, start, end, Bool.True, dups)
+
+## The rule for the duplicate keys in a key (`canonical`): the rule of the walk, so a key is compared as its
+## `Cbor.Value`. With `Reject` the walk has no duplicate key, so `Keep` gives the same bytes.
+key_dups : Rules -> [Keep, First, Last]
+key_dups = |rules|
+	match rules.keys {
+		First => First
+		Last => Last
+		_ => Keep
+	}
 
 ## `canonical` (`short` false) or `deterministic` (`short` true).
-canonical_with : List(U8), U64, U64, Bool -> List(U8)
-canonical_with = |bytes, start, end, short| {
+canonical_with : List(U8), U64, U64, Bool, [Keep, First, Last] -> List(U8)
+canonical_with = |bytes, start, end, short, dups| {
+	collapse = dups != Keep
 	var $out = []
-	# Each open item: the items left (definite), or the count of its items so far and the output before it (indefinite).
+	# Each open item: the items left (definite), or the count of its items so far and the output before it (an
+	# indefinite length, or a map with `collapse`: `buffered`). With `collapse`, `marks` has the start of each item of
+	# a map in `$out`.
 	var $open = []
 	var $p = start
 	while $p < end {
@@ -4790,8 +4812,7 @@ canonical_with = |bytes, start, end, short| {
 		whole =
 			match top {
 				Ok(f) if f.indefinite and bytes.get($p) == Ok(0xff) => {
-					count = if (f.major == 5) f.count // 2 else f.count
-					$out = put_head(f.before, f.major, count).concat($out)
+					$out = close_buffered(f, $out, dups)
 					$open = $open.drop_last(1)
 					$p = $p + 1
 					Bool.True
@@ -4800,7 +4821,7 @@ canonical_with = |bytes, start, end, short| {
 					# An item of the open item: count it.
 					$open =
 						match top {
-							Ok(f) => $open.set($open.len() - 1, { ..f, left: if (f.indefinite) f.left else f.left - 1, count: f.count + 1 }) ?? $open
+							Ok(f) => $open.set($open.len() - 1, { ..f, left: if (f.indefinite) f.left else f.left - 1, count: f.count + 1, marks: if (collapse and f.major == 5) f.marks.append($out.len()) else f.marks }) ?? $open
 							Err(_) => $open
 						}
 					match item_at(bytes, $p, any_length) {
@@ -4825,14 +4846,21 @@ canonical_with = |bytes, start, end, short| {
 							Bool.True
 						}
 						Ok(it) if it.items == until_break => {
-							$open = $open.append({ indefinite: Bool.True, major: it.major, left: 0, count: 0, before: $out })
+							$open = $open.append({ indefinite: Bool.True, buffered: Bool.True, major: it.major, left: 0, count: 0, before: $out, marks: [] })
+							$out = []
+							$p = it.next
+							Bool.False
+						}
+						Ok(it) if it.items > 0 and collapse and it.major == 5 => {
+							# The head comes when the map closes, with the count of its entries after `dedup_entries`.
+							$open = $open.append({ indefinite: Bool.False, buffered: Bool.True, major: it.major, left: it.items, count: 0, before: $out, marks: [] })
 							$out = []
 							$p = it.next
 							Bool.False
 						}
 						Ok(it) if it.items > 0 => {
 							$out = put_head($out, it.major, it.arg)
-							$open = $open.append({ indefinite: Bool.False, major: it.major, left: it.items, count: 0, before: [] })
+							$open = $open.append({ indefinite: Bool.False, buffered: Bool.False, major: it.major, left: it.items, count: 0, before: [], marks: [] })
 							$p = it.next
 							Bool.False
 						}
@@ -4854,6 +4882,9 @@ canonical_with = |bytes, start, end, short| {
 			while $closing {
 				match $open.last() {
 					Ok(f) if !f.indefinite and f.left == 0 => {
+						if f.buffered {
+							$out = close_buffered(f, $out, dups)
+						}
 						$open = $open.drop_last(1)
 					}
 					_ => {
@@ -4864,6 +4895,71 @@ canonical_with = |bytes, start, end, short| {
 		}
 	}
 	$out
+}
+
+## The output of a buffered item of `canonical_with` when it closes: the output before it, its head with the count
+## of its items, then its items (`out`). For a map with `First` or `Last`, one entry of each key (`dedup_entries`).
+close_buffered : { indefinite : Bool, buffered : Bool, major : U8, left : U64, count : U64, before : List(U8), marks : List(U64) }, List(U8), [Keep, First, Last] -> List(U8)
+close_buffered = |f, out, dups|
+	if f.major == 5 and dups != Keep {
+		d = dedup_entries(out, f.marks, dups)
+		put_head(f.before, 5, d.count).concat(d.bytes)
+	} else {
+		put_head(f.before, f.major, if (f.major == 5) f.count // 2 else f.count).concat(out)
+	}
+
+## The entries of one map in `out` (`marks`: the start of each key and value) with one entry for each key, as the
+## `Cbor.Value` reader reads the map: `First` keeps the first entry of a key, `Last` the last one, each in its place.
+## Two keys are the same when their bytes are (each inner map has one entry of each key already). A sort of the keys,
+## so O(n log n) for n entries: no hash of an attacker key.
+dedup_entries : List(U8), List(U64), [Keep, First, Last] -> { bytes : List(U8), count : U64 }
+dedup_entries = |out, marks, dups| {
+	n = marks.len() // 2
+	key = |i| {
+		s = marks.get(2 * i) ?? 0
+		out.sublist({ start: s, len: (marks.get(2 * i + 1) ?? s) - s })
+	}
+	if n < 2 or dups == Keep {
+		return { bytes: out, count: n }
+	}
+	order = (0.U64).until(n).fold(
+		List.with_capacity(n),
+		|acc, i| acc.append(i),
+	).sort_with(
+		|a, b|
+			match order_bytes(key(a), key(b)) {
+				Same => ordered(a, b)
+				other => other
+			},
+	)
+	# Each run of the same key: all its entries but one are dropped.
+	var $drop = List.repeat(Bool.False, n)
+	var $run = 0.U64
+	var $i = 1.U64
+	while $i <= n {
+		same = $i < n and order_bytes(key(order.get($i - 1) ?? 0), key(order.get($i) ?? 0)) == Same
+		if !same {
+			kept = if (dups == First) $run else $i - 1
+			for r in $run.until($i) {
+				if r != kept {
+					$drop = $drop.set(order.get(r) ?? 0, Bool.True) ?? $drop
+				}
+			}
+			$run = $i
+		}
+		$i = $i + 1
+	}
+	var $bytes = List.with_capacity(out.len())
+	var $count = 0.U64
+	for j in (0.U64).until(n) {
+		if !($drop.get(j) ?? Bool.False) {
+			s = marks.get(2 * j) ?? 0
+			e = marks.get(2 * j + 2) ?? out.len()
+			$bytes = put_span($bytes, out, s, e - s)
+			$count = $count + 1
+		}
+	}
+	{ bytes: $bytes, count: $count }
 }
 
 ## The bytes of the chunks of the string of indefinite length at `p`, joined. The walk checked the chunks.
@@ -5348,11 +5444,11 @@ moved_items = |items, off, phase, cut, count| {
 	{ buf, base, off, phase, cut, count, depth, root, input_done, limit, rules, cbor }
 }
 
-## A key reader `parse` with the check of a key of a `Dict` (`exact_key`): only the form that the writer writes.
-exact_key_with : Cbor.Reader, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])) -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e]) where [a.Cbor.Encodable([])]
-exact_key_with = |state, parse| {
+## A key reader `parse` with the check of a key of a `Dict` (`exact_key_dups` with `dups`): only the form that the writer writes.
+exact_key_with : Cbor.Reader, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), [Keep, First, Last] -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e]) where [a.Cbor.Encodable([])]
+exact_key_with = |state, parse, dups| {
 	parsed = parse(state)?
-	match exact_key(state, parsed) {
+	match exact_key_dups(state, parsed, dups) {
 		Ok(x) => Ok(x)
 		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
 	}
@@ -5483,7 +5579,7 @@ entry_step = |entries, parse_key, parse_value| {
 						} else {
 							# The canonical bytes of the key: in place for an integer, or bytes or text with the shortest head.
 							in_place = plain_key(buf, p, rules)
-							canon = if (in_place) [] else canonical(buf, p, end)
+							canon = if (in_place) [] else canonical(buf, p, end, key_dups(rules))
 							(src, start, size) = if (in_place) (buf, p, end - p) else (canon, 0, canon.len())
 							if keys_has(keys, src, start, size) {
 								if rules.keys == First {
@@ -5587,14 +5683,14 @@ key_after = |prev, bytes, start, end, rules|
 		}
 		ordered(la, lb)
 	} else {
-		order_bytes(prev, deterministic(bytes, start, end))
+		order_bytes(prev, deterministic(bytes, start, end, key_dups(rules)))
 	}
 
 ## The deterministic bytes of the key from `start` to `end`, in a list of their own (no `sublist` of the buffer: it
 ## would keep the buffer, and the next append would copy it).
 deterministic_copy : List(U8), U64, U64, Rules -> List(U8)
 deterministic_copy = |bytes, start, end, rules|
-	if (plain_key(bytes, start, rules)) put_span(List.with_capacity(end - start), bytes, start, end - start) else deterministic(bytes, start, end)
+	if (plain_key(bytes, start, rules)) put_span(List.with_capacity(end - start), bytes, start, end - start) else deterministic(bytes, start, end, key_dups(rules))
 
 ## `out` with the `len` bytes at `start` in `src` after it, one by one: a `concat` to an empty list can give the
 ## `sublist` itself, which shares `src`.
@@ -6973,7 +7069,7 @@ expect whole_state(walk_from(sorted_dup.sublist({ start: 1, len: 10 }), walk_sta
 expect order_keys([0x18, 0x0a, 0x20], 0, 2, 2, 3, { ..strict, shortest_heads: Bool.False }) == Before
 expect order_keys([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0xfa, 0x3f, 0xc0, 0, 0], 0, 9, 9, 14, strict) == Before
 expect order_keys([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0xf9, 0x3c, 0x00], 0, 9, 9, 12, strict) == Same
-expect deterministic([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0], 0, 9) == [0xf9, 0x3c, 0x00]
+expect deterministic([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0], 0, 9, Keep) == [0xf9, 0x3c, 0x00]
 
 ## The state at a cut holds the work so far: the items, the open items, the keys of the open map.
 expect
@@ -6991,8 +7087,8 @@ expect cut_positions(nested, indefinite_rules) == [0, 0, 1, 0, 3, 3, 5, 5, 0, 8,
 expect walk(reader([0xbb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]), strict, Bool.False).map_ok(|s| s.pos) == Err(InvalidCbor(0))
 
 ## Keys with the shortest heads: the same key with another head width is the same key.
-expect canonical([0x78, 0x01, 0x61, 0x19, 0x00, 0x05], 0, 6) == [0x61, 0x61, 0x05]
-expect canonical([0xf9, 0x3c, 0x00], 0, 3) == [0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0]
+expect canonical([0x78, 0x01, 0x61, 0x19, 0x00, 0x05], 0, 6, Keep) == [0x61, 0x61, 0x05]
+expect canonical([0xf9, 0x3c, 0x00], 0, 3, Keep) == [0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0]
 expect dup_keys([0xa2, 0x61, 0x61, 0x01, 0x78, 0x01, 0x61, 0x02], [1, 3, 4, 7], { ..strict, shortest_heads: Bool.False }) == Err(InvalidCbor(4))
 expect dup_keys([0xa2, 0x61, 0x61, 0x01, 0x78, 0x01, 0x61, 0x02], [1, 3, 4, 7], strict) == Ok([])
 

@@ -105,6 +105,22 @@ expect {
 	first == Ok(vmap([(Text("a"), Int(1)), (Text("b"), Int(2))])) and last == Ok(vmap([(Text("b"), Int(2)), (Text("a"), Int(3))]))
 }
 
+## A key with a duplicate key in it is the Cbor.Value without the entry that First or Last skips: in
+## {{0: 0}: 4, {0: 0, 0: 0}: ""} the two keys are the same. The value reads back (fuzz parse_never_crashes).
+expect {
+	zero = vmap([(Int(0), Int(0))])
+	first : Try(Cbor.Value, _)
+	first = Cbor.parse_with(hex("a2a1000004a20000000060"), { duplicate_keys: First })
+	last : Try(Cbor.Value, _)
+	last = Cbor.parse_with(hex("a2a1000004a20000000060"), { duplicate_keys: Last })
+	# The fuzz input: indefinite lengths, and 20 instances of the key in the inner map.
+	fuzz_bytes = hex("bfa1000004b4").concat(List.repeat(0, 40)).concat(hex("60ff"))
+	fuzz : Try(Cbor.Value, _)
+	fuzz = Cbor.parse_with(fuzz_bytes, { duplicate_keys: Last, allow: [IndefiniteLength] })
+	back = |r| r.map_ok(|v| Cbor.parse(Cbor.encode(v)) == Ok(v)) == Ok(Bool.True)
+	first == Ok(vmap([(zero, Int(4))])) and last == Ok(vmap([(zero, Text(""))])) and fuzz == last and back(first) and back(last)
+}
+
 ## Two maps with the same entries in another order are not equal: their bytes are not equal.
 expect vmap([(Int(1), Null), (Int(2), Null)]) != vmap([(Int(2), Null), (Int(1), Null)])
 
@@ -179,7 +195,7 @@ expect {
 	reads_back(v) and d.get(vmap([(Array([Float(F64.nan)]), Tag(3, Bytes([1]))), (Text("k"), Simple(255))])) == Ok(1) and d.get(Cbor.Value.Text("b")) == Err(KeyNotFound)
 }
 
-## 200,000 nested arrays and tags: is_eq and to_hash are a loop, with no stack overflow.
+## A value of n nested arrays and tags around inner.
 deep : U64, Cbor.Value -> Cbor.Value
 deep = |n, inner| {
 	var $v = inner
@@ -189,11 +205,30 @@ deep = |n, inner| {
 	$v
 }
 
+## The same value, with each 25,000th level also kept in a list, outermost first.
+deep_levels : U64, Cbor.Value -> List(Cbor.Value)
+deep_levels = |n, inner| {
+	var $v = inner
+	var $levels = []
+	for i in (0.U64).until(n) {
+		$v = if (i % 2 == 0) Cbor.Value.Array([$v]) else Cbor.Value.Tag(i, $v)
+		if i % 25000 == 24999 {
+			$levels = $levels.append($v)
+		}
+	}
+	$levels.rev()
+}
+
+## 500,000 nested arrays and tags: is_eq and to_hash are a loop, with no stack overflow. On x86-64 a
+## recursive is_eq overflows at 200,000 levels, and a recursive to_hash at 300,000.
+## The drop of Roc is recursive, so the value is not dropped in one piece: the list of deep_levels is the
+## value under test, and it drops at most 25,000 levels at a time. Do not take the outermost level out of
+## the list: when that level is dropped after the list, the drop is 500,000 levels deep.
 expect {
-	a = deep(200000, Int(1))
-	b = deep(200000, Int(1))
-	c = deep(200000, Int(2))
-	a == b and a != c and Set.from_list([a, b]).len() == 1
+	a = deep_levels(500000, Int(1))
+	b = deep_levels(500000, Int(1))
+	c = deep_levels(500000, Int(2))
+	a.len() == 20 and a == b and a != c and Set.from_list([a, b]).len() == 1
 }
 
 # P19 (G3): Cbor.parse_prefix and Cbor.parse_sequence

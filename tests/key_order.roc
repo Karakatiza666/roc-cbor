@@ -21,6 +21,18 @@ vmap = |pairs|
 
 # Sorted input reads
 
+## With First or Last, a key is compared as its Cbor.Value, without the entries that are skipped in it: the keys
+## {0: 0} and {0: 0, 0: 0} are the same key.
+expect {
+	bytes = [0xa2, 0xa1, 0x00, 0x00, 0x04, 0xa2, 0x00, 0x00, 0x00, 0x00, 0x05]
+	zero = vmap([(Int(0), Int(0))])
+	first : Try(Cbor.Value, _)
+	first = Cbor.parse_with(bytes, { key_order: Sorted, duplicate_keys: First })
+	last : Try(Cbor.Value, _)
+	last = Cbor.parse_with(bytes, { key_order: Sorted, duplicate_keys: Last })
+	first == Ok(vmap([(zero, Int(4))])) and last == Ok(vmap([(zero, Int(5))]))
+}
+
 ## {"a": 1, "b": 2} as a record, a Dict and a Cbor.Value.
 expect {
 	bytes = [0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x02]
@@ -288,6 +300,36 @@ expect {
 	c : Try({ a : U64 }, _)
 	c = Cbor.parse_with(bytes, sorted)
 	a == Ok({ a: 1 }) and b == Ok({ a: 3 }) and c == Err(InvalidCbor(4))
+}
+
+# A key with a map in it
+
+## A key is compared as its Cbor.Value. With Last, the key {0: 1, 0: 2} is {0: 2} (deterministic bytes a1 00 02):
+## { {0: 1, 0: 2}: 1, {0: 2}: 2 } has one key two times, and Last gives the second entry. With the bytes as they are
+## (a2 00 01 00 02) the second key would come before the first.
+expect {
+	twice = [0xa2, 0xa2, 0x00, 0x01, 0x00, 0x02, 0x01, 0xa1, 0x00, 0x02, 0x02]
+	a : Try(Cbor.Value, _)
+	a = Cbor.parse_with(twice, { key_order: Sorted, duplicate_keys: Last })
+	a == Ok(vmap([(vmap([(Int(0), Int(2))]), Int(2))]))
+}
+
+## { {0: h'', 0: 9}: 0, {0: 0, 14: 0}: 0 } with Last: the first key is {0: 9} (a1 ..), before {0: 0, 14: 0} (a2 ..).
+## With the bytes as they are (a2 00 40 ..) the second key would come before the first.
+expect {
+	bytes = [0xa2, 0xa2, 0x00, 0x40, 0x00, 0x09, 0x00, 0xa2, 0x00, 0x00, 0x0e, 0x00, 0x00]
+	a : Try(Cbor.Value, _)
+	a = Cbor.parse_with(bytes, { key_order: Sorted, duplicate_keys: Last })
+	a == Ok(vmap([(vmap([(Int(0), Int(9))]), Int(0)), (vmap([(Int(0), Int(0)), (Int(14), Int(0))]), Int(0))]))
+}
+
+## The same with key_order: Any and First: the key {0: 1, 0: 2} is {0: 1}, so { {0: 1, 0: 2}: 1, {0: 1}: 2 } has one
+## key two times, and First gives the first entry.
+expect {
+	twice = [0xa2, 0xa2, 0x00, 0x01, 0x00, 0x02, 0x01, 0xa1, 0x00, 0x01, 0x02]
+	a : Try(Cbor.Value, _)
+	a = Cbor.parse_with(twice, { duplicate_keys: First })
+	a == Ok(vmap([(vmap([(Int(0), Int(1))]), Int(1))]))
 }
 
 # key_order: Any does not change

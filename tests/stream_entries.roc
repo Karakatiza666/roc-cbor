@@ -383,6 +383,17 @@ expect {
 	a == u64_u64(ok, {}) and a.is_ok() and b == Err(InvalidCbor(dup.len() - 2)) and b == u64_u64(dup, {}) and c == u64_u64(dup, { duplicate_keys: First })
 }
 
+## A key with a duplicate key in it is the Cbor.Value without the skipped entry: {"a": 0} and {"a": 0, "a": 0}
+## are the same key, with key_order Any and Sorted (tests/value.roc and tests/key_order.roc: the same in parse_with).
+expect {
+	bytes = hex("a2a161610004a261610061610005")
+	a : Try(List(({ a : U64 }, U64)), Errs)
+	a = stream(Cbor.Entries.map({ duplicate_keys: First }), bytes.chunks_of(1))
+	b : Try(List(({ a : U64 }, U64)), Errs)
+	b = stream(Cbor.Entries.map({ key_order: Sorted, duplicate_keys: Last }), bytes.chunks_of(3))
+	a == Ok([({ a: 0 }, 4)]) and b == Ok([({ a: 0 }, 5)])
+}
+
 ## Keys that differ only in head width (PaddedNumbers) or float width are the same key (the canonical rule).
 expect map_agrees(hex("a20101180102"), { allow: [PaddedNumbers] }, u64_u64) and map_agrees(hex("a2f93c0001fb3ff000000000000002"), {}, f64_u64) and map_agrees(hex("a2f93c0001fb3ff000000000000002"), { duplicate_keys: First }, f64_u64)
 
@@ -438,6 +449,18 @@ expect {
 	want : Try(Cbor.Value, Errs)
 	want = Cbor.parse(hex("a1617802"))
 	a.map_ok(|l| l.map(|(_, v)| Ok(v) == want)) == Ok([Bool.True, Bool.False]) and map_agrees(bytes, sorted_last, str_value)
+}
+
+## A key with a map in it is compared as its Cbor.Value (Sorted, Last): {0: h'', 0: 9} is {0: 9}, before
+## {0: 0, 14: 0}. The held entry is given when the second key comes, and its key is not a Str: the error is at the
+## first key (1), not an order error at the second key (7). (Fuzz input of the target stream, 0.5.0.)
+expect {
+	bytes = hex("a2a20040000900a200000e0000")
+	options : Cbor.Options
+	options = { key_order: Sorted, duplicate_keys: Last }
+	a : Try(List((Str, U64)), Errs)
+	a = stream(Cbor.Entries.map(options), bytes.chunks_of(1))
+	a == Err(InvalidCbor(1)) and map_agrees(bytes, options, str_u64)
 }
 
 ## Duplicate keys inside a key or a value are checked by the walk of the item, as in parse_with.

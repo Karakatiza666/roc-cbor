@@ -158,6 +158,18 @@ expect {
 	sorts(vmap(pairs), "a320f6616201626161f5") and Cbor.encode_with(vmap(pairs.rev()), { key_order: Sorted }) == Cbor.encode_with(vmap(pairs), { key_order: Sorted })
 }
 
+## A Cbor.Value map reads back from its sorted bytes with its entries in the sorted order: `0` (`00`) before `""` (`60`).
+## A ValueMap keeps the order of its entries, so that is not equal to the map in the other order, but it writes the same
+## sorted bytes. (Fuzz, round_trip: the property expected the map in its first order.)
+expect {
+	given = vmap([(text(""), text("")), (Cbor.Value.Int(Cbor.IntValue.from_u64(0)), text(""))])
+	sorted = vmap([(Cbor.Value.Int(Cbor.IntValue.from_u64(0)), text("")), (text(""), text(""))])
+	bytes = Cbor.encode_with(given, { key_order: Sorted }) ?? []
+	back : Try(Cbor.Value, _)
+	back = Cbor.parse_with(bytes, { key_order: Sorted })
+	bytes == hex("a200606060") and back == Ok(sorted) and given != sorted and sorts(sorted, "a200606060")
+}
+
 ## A map of indefinite length in a Cbor.Raw is sorted too, and keeps its break. A byte string that looks like a map does not change.
 expect {
 	raw : Try(Cbor.Raw, _)

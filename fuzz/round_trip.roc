@@ -16,7 +16,8 @@ import pkg.Cbor
 # Each Cbor.Value made through the public constructors reads back as an equal value (encode cannot fail for it),
 # is_eq agrees with the bytes, and equal values have the same hash.
 # key_order: Sorted: the bytes read back as the same value (also with the read option key_order: Sorted), and the
-# encode (Sorted) of their Cbor.Value gives the same bytes.
+# encode (Sorted) of their Cbor.Value gives the same bytes. A Cbor.Value map keeps the order of its entries (and is
+# equal only to a map with the same order), so it reads back with its entries in the sorted order (sort_maps).
 
 Kind : [Empty, One(U32), Two(Str, I16)]
 
@@ -228,6 +229,28 @@ before = |x, y|
 		_ => Bool.False
 	}
 
+## `v` with the entries of each map (also of a map in a key) in the order of `key_order: Sorted`: the bytewise order
+## of the Sorted bytes of their keys (RFC 8949 4.2.1). The sorted bytes of `v` read back as this value: a ValueMap
+## keeps the order of its entries, and its `is_eq` compares them in that order.
+sort_maps : Cbor.Value -> Cbor.Value
+sort_maps = |v|
+	match v {
+		Array(items) => Cbor.Value.Array(items.map(sort_maps))
+		Map(m) => {
+			keyed = m.to_list().map(
+				|(k, x)| {
+					key = sort_maps(k)
+					{ bytes: Cbor.encode_with(key, { key_order: Sorted }) ?? [], key, x: sort_maps(x) }
+				},
+			)
+			sorted = keyed.sort_with(|a, b| if (before(a.bytes, b.bytes)) Before else if (before(b.bytes, a.bytes)) After else Same)
+			# Two keys with the same sorted bytes: the Sorted encode is DuplicateMapKey, and this value is not used.
+			Cbor.Value.Map(Cbor.ValueMap.from_list(sorted.map(|e| (e.key, e.x))) ?? m)
+		}
+		Tag(n, inner) => Cbor.Value.Tag(n, sort_maps(inner))
+		_ => v
+	}
+
 ## The deterministic property for `bytes` (the Given encode) and `sorted` (the Sorted encode of the same value):
 ## the sorted bytes read back as a Cbor.Value whose Sorted encode is the same bytes, also with the read option
 ## `key_order: Sorted`. `DuplicateMapKey` only with a container key.
@@ -289,11 +312,13 @@ test! = |g| {
 		crash "key_order: Sorted: a Cbor.Value does not give the same bytes again"
 	}
 	bytes = Cbor.encode(value)
-	# key_order: Sorted reads back as the same item with the read option key_order: Sorted, and is stable.
+	# key_order: Sorted reads back as the same item with the read option key_order: Sorted, and is stable. The maps of
+	# a Cbor.Value read back with their entries in the sorted order.
 	sorted_bytes = Cbor.encode_with(value, { key_order: Sorted })
 	sorted_back : Try(Item, _)
 	sorted_back = sorted_bytes.map_ok(|b| Cbor.parse_with(b, { key_order: Sorted })) ?? Ok(value)
-	if !sorted_ok(bytes, sorted_bytes) or sorted_back != Ok(value) {
+	sorted_value = if (sorted_bytes.is_ok()) { ..value, values: value.values.map(sort_maps) } else value
+	if !sorted_ok(bytes, sorted_bytes) or sorted_back != Ok(sorted_value) {
 		crash "key_order: Sorted: the item does not read back, or the bytes change in a second encode"
 	}
 	back : Try(Item, _)
