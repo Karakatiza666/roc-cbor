@@ -42,7 +42,7 @@ Add the package to the header with its release URL. The release notes of each
 [release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.5.0.
 
 ```roc
-app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.5.0/5V1A5rBUZKvApnFeivzFuxE4j8EUybNWSosEAA4yK9n6.tar.zst" }
+app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.5.0/B5U2mPsWTtuxfCRMzqQxio2ecDv7CAzCoyEMENMh4FNF.tar.zst" }
 
 import cbor.Cbor
 ```
