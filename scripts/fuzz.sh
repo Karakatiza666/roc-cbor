@@ -15,7 +15,11 @@ mkdir -p "$work"
 status=0
 for f in fuzz/*.roc; do
 	name=$(basename "$f" .roc)
-	if ! "$ROC" build --fuzz "$f" --output="$work/$name" >"$work/$name.build.log" 2>&1; then
+	code=0
+	"$ROC" build --fuzz "$f" --output="$work/$name" >"$work/$name.build.log" 2>&1 || code=$?
+	# roc build exits with 1 for errors and 2 for warnings only. roc-fuzz 0.6.1 has a warning in its platform
+	# (a shadowed name), so 2 is a build.
+	if [ "$code" -ne 0 ] && [ "$code" -ne 2 ]; then
 		echo "$name: build failed"
 		tail -n 30 "$work/$name.build.log"
 		exit 1
