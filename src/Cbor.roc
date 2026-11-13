@@ -3692,6 +3692,13 @@ read_value = |state| {
 						match it.major {
 							0 => Item(Cbor.Value.Int(Cbor.IntValue.(it.arg.to_i128())))
 							1 => Item(Cbor.Value.Int(Cbor.IntValue.(-1 - it.arg.to_i128())))
+							# A string of definite length is the `arg` bytes before `next`: no second read of its head.
+							2 if !indefinite_string(state.bytes, $pos) => Item(Cbor.Value.Bytes(state.bytes.sublist({ start: it.next - it.arg, len: it.arg })))
+							3 if !indefinite_string(state.bytes, $pos) =>
+								match Str.from_utf8(state.bytes.sublist({ start: it.next - it.arg, len: it.arg })) {
+									Ok(t) => Item(Cbor.Value.Text(t))
+									Err(_) => return Err(InvalidCbor($pos))
+								}
 							2 => Item(Cbor.Value.Bytes(string_at(at(state, $pos), 2)?.bytes))
 							3 => Item(Cbor.Value.Text(text(at(state, $pos))?.value))
 							7 =>
@@ -3755,6 +3762,10 @@ read_value = |state| {
 		Err(NotDone) => Err(InvalidCbor(state.pos))
 	}
 }
+
+## The head at `p` is a string of indefinite length (`5f` or `7f`): its chunks are joined.
+indefinite_string : List(U8), U64 -> Bool
+indefinite_string = |bytes, p| (bytes.get(p) ?? 0).bitwise_and(31) == 31
 
 ## The value of a whole array, map or tag from its items.
 frame_value : [TagFrame(U64), ArrayFrame, MapFrame], List(Cbor.Value) -> Cbor.Value
@@ -7327,6 +7338,27 @@ expect {
 	r : Try({ ab : U64 }, _)
 	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: First })
 	r == Ok({ ab: 1 })
+}
+
+## A Cbor.Value text of definite length with invalid UTF-8 in an array is an error at its head (byte 1).
+expect {
+	r : Try(Cbor.Value, _)
+	r = Cbor.parse([0x81, 0x62, 0xc3, 0x28])
+	r == Err(InvalidCbor(1))
+}
+
+## A Cbor.Value byte string of definite length reads its bytes.
+expect {
+	r : Try(Cbor.Value, _)
+	r = Cbor.parse([0x82, 0x42, 0x01, 0x02, 0x61, 0x61])
+	r == Ok(Cbor.Value.Array([Cbor.Value.Bytes([0x01, 0x02]), Cbor.Value.Text("a")]))
+}
+
+## A Cbor.Value text of indefinite length (with IndefiniteLength) joins its chunks.
+expect {
+	r : Try(Cbor.Value, _)
+	r = Cbor.parse_with([0x7f, 0x61, 0x61, 0x61, 0x62, 0xff], { allow: [IndefiniteLength] })
+	r == Ok(Cbor.Value.Text("ab"))
 }
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
