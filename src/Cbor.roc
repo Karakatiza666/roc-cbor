@@ -2153,12 +2153,17 @@ Cbor :: {
 		{ out, st } = w
 		# Only camelCase keys can collide: the Roc names of one record are all different.
 		dup = st.fields == Camel and count > 1 and camel_collision(write_fields)
-		{ w: done, start, unused } = nest({ out, st }, Head(5, count), Plain, Partial, write_fields, add_field)?
-		# Absent fields: a shorter head for the real count, and a gap for the rest of the old head.
-		# With each field there, `done` as it is. A conditional: an early `return Ok(done)` made the encode 1.6x slower
-		# (nightly-2026-11-13-03dce41).
-		{ out: o, st: d } = if (unused == 0) done else shorten_head(done, start, count, count - unused)
-		Ok({ out: o, st: { ..d, dup: d.dup or dup } })
+		# TODO(roc#13035): a match with no early return, not `?` (see `nest`).
+		match nest({ out, st }, Head(5, count), Plain, Partial, write_fields, add_field) {
+			Ok({ w: done, start, unused }) => {
+				# Absent fields: a shorter head for the real count, and a gap for the rest of the old head.
+				# With each field there, `done` as it is. A conditional: an early `return Ok(done)` made the encode 1.6x
+				# slower (nightly-2026-11-13-03dce41).
+				{ out: o, st: d } = if (unused == 0) done else shorten_head(done, start, count, count - unused)
+				Ok({ out: o, st: { ..d, dup: d.dup or dup } })
+			}
+			Err(e) => Err(e)
+		}
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
@@ -2166,8 +2171,7 @@ Cbor :: {
 	## is exactly one item. A key of any type writes as that type writes: an integer key is an integer, not text.
 	encode_dict : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)), (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_dict = |w, count, write_entries| {
-		{ w: done, .. } = nest(w, Head(5, count), Plain, Full, write_entries, add_entry)?
-		Ok(done)
+		nest(w, Head(5, count), Plain, Full, write_entries, add_entry).map_ok(|n| n.w)
 	}
 
 	## Codec protocol: a key of a `Dict(Str, v)`, and of a tag union with no payloads: text.
@@ -2235,15 +2239,13 @@ Cbor :: {
 	## A list of `U8` (the first item comes from `encode_u8`) is a byte string. An empty list is an empty array.
 	encode_list : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_list = |w, count, write_items| {
-		{ w: done, .. } = nest(w, NoHead(count), Pending(count), Full, write_items, add_item)?
-		Ok(done)
+		nest(w, NoHead(count), Pending(count), Full, write_items, add_item).map_ok(|n| n.w)
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
 	encode_tuple : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_tuple = |w, count, write_items| {
-		{ w: done, .. } = nest(w, Head(4, count), Plain, Full, write_items, add_item)?
-		Ok(done)
+		nest(w, Head(4, count), Plain, Full, write_items, add_item).map_ok(|n| n.w)
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
@@ -2254,8 +2256,7 @@ Cbor :: {
 			{ out, st } = begin(w)
 			Ok({ out: put_text(out, name), st })
 		} else {
-			{ w: done, .. } = nest(w, Keyed(name, count), Plain, Full, write_payloads, add_item)?
-			Ok(done)
+			nest(w, Keyed(name, count), Plain, Full, write_payloads, add_item).map_ok(|n| n.w)
 		}
 }
 
@@ -2267,12 +2268,13 @@ begin : Cbor.Writer -> Cbor.Writer
 begin = |w| {
 	{ out, st } = w
 	if !st.owe {
-		return { out, st: { ..st, bad: Bool.True } }
-	}
-	match st.list {
-		Plain => { out, st: { ..st, owe: Bool.False } }
-		Pending(count) => { out: put_head(out, 4, count), st: { ..st, owe: Bool.False, list: Plain } }
-		Bytes({ start, count }) => { out: rewrite_as_array(out, start, count), st: { ..st, owe: Bool.False, list: Plain } }
+		{ out, st: { ..st, bad: Bool.True } }
+	} else {
+		match st.list {
+			Plain => { out, st: { ..st, owe: Bool.False } }
+			Pending(count) => { out: put_head(out, 4, count), st: { ..st, owe: Bool.False, list: Plain } }
+			Bytes({ start, count }) => { out: rewrite_as_array(out, start, count), st: { ..st, owe: Bool.False, list: Plain } }
+		}
 	}
 }
 
@@ -2315,32 +2317,41 @@ nest = |w, heads, list, need, write, add| {
 	id = st.next
 	left = st.left
 	level = st.level
-	Cbor.Container.(inner) = write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), add)?
-	{ out: o, st: d } = inner
-	# A list with no item: its head is still to write.
-	pending = d.list == Pending(count)
-	done = if (pending) put_head(o, 4, count) else o
-	# The writer of this level, the last place with its item, and with `Full` each place opened.
-	ok = d.level == id and !d.owe and (need == Partial or d.left == 0)
-	Ok({ w: { out: done, st: { ..d, left, level, owe: Bool.False, list: Plain, bad: d.bad or !ok } }, start, unused: d.left })
+	# TODO(roc#13035): the early return of `?` (or of `return Err(e)`) makes the encode up to 2x slower (inlining is
+	# lost). A match that gives `Err(e)` with no return does not. When the issue is fixed, go back to `?` here and in
+	# the other writer functions with this TODO.
+	match write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), add) {
+		Ok(Cbor.Container.({ out: o, st: d })) => {
+			# A list with no item: its head is still to write.
+			pending = d.list == Pending(count)
+			done = if (pending) put_head(o, 4, count) else o
+			# The writer of this level, the last place with its item, and with `Full` each place opened.
+			ok = d.level == id and !d.owe and (need == Partial or d.left == 0)
+			Ok({ w: { out: done, st: { ..d, left, level, owe: Bool.False, list: Plain, bad: d.bad or !ok } }, start, unused: d.left })
+		}
+		Err(e) => Err(e)
+	}
 }
 
 ## One value of a list, a tuple or a tag: exactly one item.
 add_item : Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)
-add_item = |Cbor.Container.(w), write_value| Ok(Cbor.Container.(slot(w, 1, write_value)?))
+add_item = |Cbor.Container.(w), write_value| slot(w, 1, write_value).map_ok(|x| Cbor.Container.(x))
 
 ## One entry of a map: exactly one item for the key, then exactly one item for the value. The entry takes one place.
 add_entry : Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)), (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)
 add_entry = |Cbor.Container.(w), write_key, write_value| {
-	keyed = slot(w, 1, write_key)?
-	Ok(Cbor.Container.(slot(keyed, 0, write_value)?))
+	# TODO(roc#13035): no `?` (see `nest`).
+	match slot(w, 1, write_key) {
+		Ok(keyed) => slot(keyed, 0, write_value).map_ok(|x| Cbor.Container.(x))
+		Err(e) => Err(e)
+	}
 }
 
 ## One field of a record: the key, then exactly one item.
 add_field : Cbor.Container, Str, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)
 add_field = |Cbor.Container.(w), name, write_value| {
 	{ out, st } = w
-	Ok(Cbor.Container.(slot({ out: put_text(out, name), st }, 1, write_value)?))
+	slot({ out: put_text(out, name), st }, 1, write_value).map_ok(|x| Cbor.Container.(x))
 }
 
 ## Opens one place of the current level for `write_value`, which must write exactly one item there. The place comes
@@ -2367,9 +2378,14 @@ tag_slot = |w, write_value| {
 	id = st.next
 	left = st.left
 	level = st.level
-	{ out: o, st: d } = run_slot({ out, st: { ..st, owe: Bool.True, level: id, next: id + 1 } }, write_value)?
-	ok = d.level == id and !d.owe
-	Ok({ out: o, st: { ..d, left, level, owe: Bool.False, bad: d.bad or !ok } })
+	# TODO(roc#13035): no `?` (see `nest`).
+	match run_slot({ out, st: { ..st, owe: Bool.True, level: id, next: id + 1 } }, write_value) {
+		Ok({ out: o, st: d }) => {
+			ok = d.level == id and !d.owe
+			Ok({ out: o, st: { ..d, left, level, owe: Bool.False, bad: d.bad or !ok } })
+		}
+		Err(e) => Err(e)
+	}
 }
 
 ## Only the call of `write_value`: see `slot`.
