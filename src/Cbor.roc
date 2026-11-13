@@ -2153,7 +2153,7 @@ Cbor :: {
 		{ out, st } = w
 		# Only camelCase keys can collide: the Roc names of one record are all different.
 		dup = st.fields == Camel and count > 1 and camel_collision(write_fields)
-		{ w: done, start, unused } = nest({ out, st }, Head(5, count), Plain, Partial, |c| write_fields(c, add_field))?
+		{ w: done, start, unused } = nest({ out, st }, Head(5, count), Plain, Partial, write_fields, add_field)?
 		# Absent fields: a shorter head for the real count, and a gap for the rest of the old head.
 		{ out: o, st: d } = shorten_head(done, start, count, count - unused)
 		Ok({ out: o, st: { ..d, dup: d.dup or dup } })
@@ -2164,7 +2164,7 @@ Cbor :: {
 	## is exactly one item. A key of any type writes as that type writes: an integer key is an integer, not text.
 	encode_dict : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)), (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_dict = |w, count, write_entries| {
-		{ w: done, .. } = nest(w, Head(5, count), Plain, Full, |c| write_entries(c, add_entry))?
+		{ w: done, .. } = nest(w, Head(5, count), Plain, Full, write_entries, add_entry)?
 		Ok(done)
 	}
 
@@ -2233,14 +2233,14 @@ Cbor :: {
 	## A list of `U8` (the first item comes from `encode_u8`) is a byte string. An empty list is an empty array.
 	encode_list : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_list = |w, count, write_items| {
-		{ w: done, .. } = nest(w, NoHead(count), Pending(count), Full, |c| write_items(c, add_item))?
+		{ w: done, .. } = nest(w, NoHead(count), Pending(count), Full, write_items, add_item)?
 		Ok(done)
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
 	encode_tuple : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_tuple = |w, count, write_items| {
-		{ w: done, .. } = nest(w, Head(4, count), Plain, Full, |c| write_items(c, add_item))?
+		{ w: done, .. } = nest(w, Head(4, count), Plain, Full, write_items, add_item)?
 		Ok(done)
 	}
 
@@ -2252,7 +2252,7 @@ Cbor :: {
 			{ out, st } = begin(w)
 			Ok({ out: put_text(out, name), st })
 		} else {
-			{ w: done, .. } = nest(w, Keyed(name, count), Plain, Full, |c| write_payloads(c, add_item))?
+			{ w: done, .. } = nest(w, Keyed(name, count), Plain, Full, write_payloads, add_item)?
 			Ok(done)
 		}
 }
@@ -2296,12 +2296,14 @@ put_heads = |out, heads|
 		Keyed(name, count) => put_head(put_text(put_head(out, 5, 1), name), 4, count)
 	}
 
-## Starts one item and writes its heads, then runs `write` on a new level with `count` places and a new id.
-## The container that `write` gives back must be of that level. `Full`: each place must have its item.
+## Starts one item and writes its heads, then runs `write(container, add)` on a new level with `count` places and a
+## new id. The container that `write` gives back must be of that level. `Full`: each place must have its item.
 ## `Partial` (a record): places can stay empty. Then back to the current level.
 ## Gives the position of the head and the count of empty places.
-nest : Cbor.Writer, [NoHead(U64), Head(U8, U64), Keyed(Str, U64)], [Plain, Pending(U64), Bytes({ start : U64, count : U64 })], [Full, Partial], (Cbor.Container -> Try(Cbor.Container, err)) -> Try({ w : Cbor.Writer, start : U64, unused : U64 }, err)
-nest = |w, heads, list, need, write| {
+## `write` and `add` come as two arguments, not as one closure `|c| write(c, add)`: a closure that holds the `write`
+## of the derived encoder for each container cost 40% of a record encode (nightly-2026-11-13-03dce41).
+nest : Cbor.Writer, [NoHead(U64), Head(U8, U64), Keyed(Str, U64)], [Plain, Pending(U64), Bytes({ start : U64, count : U64 })], [Full, Partial], (Cbor.Container, add -> Try(Cbor.Container, err)), add -> Try({ w : Cbor.Writer, start : U64, unused : U64 }, err)
+nest = |w, heads, list, need, write, add| {
 	{ out, st } = begin(w)
 	count =
 		match heads {
@@ -2311,7 +2313,7 @@ nest = |w, heads, list, need, write| {
 	id = st.next
 	left = st.left
 	level = st.level
-	Cbor.Container.(inner) = write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }))?
+	Cbor.Container.(inner) = write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), add)?
 	{ out: o, st: d } = inner
 	# A list with no item: its head is still to write.
 	pending = d.list == Pending(count)
