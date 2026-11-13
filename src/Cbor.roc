@@ -3801,9 +3801,8 @@ read_value = |state| {
 								$closing = Bool.False
 							} else {
 								$frames = $frames.drop_last(1)
-								items = $values.drop_first(top.start).append($v)
+								$v = close_frame(top.kind, $values, top.start, $v)
 								$values = $values.take_first(top.start)
-								$v = frame_value(top.kind, items)
 							}
 						}
 					}
@@ -3820,6 +3819,25 @@ read_value = |state| {
 ## The head at `p` is a string of indefinite length (`5f` or `7f`): its chunks are joined.
 indefinite_string : List(U8), U64 -> Bool
 indefinite_string = |bytes, p| (bytes.get(p) ?? 0).bitwise_and(31) == 31
+
+## The value of a whole array, map or tag: its items are `values` from `start`, then `last`. A map takes its pairs from
+## `values` in place: no list of its items first (`frame_value`), so one copy of the items less.
+close_frame : [TagFrame(U64), ArrayFrame, MapFrame], List(Cbor.Value), U64, Cbor.Value -> Cbor.Value
+close_frame = |kind, values, start, last|
+	match kind {
+		MapFrame => {
+			n = values.len() - start
+			var $pairs = List.with_capacity((n + 1) // 2)
+			var $i = start
+			while $i + 1 < values.len() {
+				$pairs = $pairs.append((values.get($i) ?? Cbor.Value.Null, values.get($i + 1) ?? Cbor.Value.Null))
+				$i = $i + 2
+			}
+			# The key of the last pair is the last of `values`, and `last` is its value.
+			Cbor.Value.Map(Cbor.ValueMap.($pairs.append((values.get($i) ?? Cbor.Value.Null, last))))
+		}
+		_ => frame_value(kind, values.drop_first(start).append(last))
+	}
 
 ## The value of a whole array, map or tag from its items.
 frame_value : [TagFrame(U64), ArrayFrame, MapFrame], List(Cbor.Value) -> Cbor.Value
