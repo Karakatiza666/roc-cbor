@@ -972,6 +972,7 @@ Each fix of 0.5.0 has a regression test, and each test was checked against the c
 | `scripts/fuzz.sh [runs]` | The property tests with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.6.1 (each target reads its input bytes as the entropy of its generators, as 0.4.3 did; the generated values hold `Cbor` encoders, so they have no derived roc-fuzz input format): a fixed count of inputs for each target in `fuzz/` (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`). Linux x86-64 and macOS arm64 only. A failure is saved in `.cache/fuzz/art-<target>/`. |
 | `scripts/scale.sh [runs]` | Complexity. Each case of `bench/scale.roc` (writer), `bench/scale_read.roc` (reader) and `bench/scale_stream.roc` (the `Stream` adapters) is its own app (`--opt=speed`), at 5k, 10k, 20k and 40k items. The time for each item must not grow more than 2.5x (n log n for a key sort, depth for the depth cases). It fails on 0.4.1 (internal unions), on a quadratic duplicate check, on a decoder that is kept and pushed again, on a walk of the open item from its start at each chunk, and on a linear scan of the keys of a streamed map. Table "Stream scale cases". |
 | `scripts/bench.sh [--check \| --update] [runs]` | Speed of `bench/bench.roc`: 0.4.1 against HEAD, or HEAD against `bench/baseline.txt` (each time divided by the time of a `calib` case; a case fails above 1.5x) |
+| `python3 bench/compare/run.py [--refresh]` | A diagnostic for development (`bench/compare/README.md`): the same fixtures read and written by roc-cbor and by CBOR libraries of other languages as reference points, to find slow paths and compiler issues. A local report: its results are not committed. |
 | `scripts/differential.sh [count] [seed]` | `Cbor.Value` against Python `cbor2` 6.2.1 on the fuzz corpus, the RFC vectors and random items with mutations. A difference that is not in the table of `differential/differential.py` fails. `DIFF_STRICT=1`: padded numbers (no `PaddedNumbers`) are an expected difference. |
 | `scripts/bundle.sh` | Makes `dist/<hash>.tar.zst` and prints its release URL |
 | `scripts/test_bundle.sh` | Runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep` |
@@ -1072,7 +1073,8 @@ Issue drafts for the rows with no issue wait for the maintainer. The repros of #
 | `examples/round_trip.roc` | An app that uses each public item, reads a SQL row, reads a type over a tag, and reads tag unions of a peer. It runs on the echo host of roc, with no platform. |
 | `examples/stream.roc` | An app that writes and reads with each `Stream` adapter, with a source error. The same echo host. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
-| `bench/` | `bench.roc` and `baseline.txt` (`scripts/bench.sh`), `scale.roc`, `scale_read.roc` and `scale_stream.roc` (`scripts/scale.sh`) |
+| `bench/` | `bench.roc` (its `dump` mode writes the fixtures of `bench/compare/`) and `baseline.txt` (`scripts/bench.sh`), `scale.roc`, `scale_read.roc` and `scale_stream.roc` (`scripts/scale.sh`) |
+| `bench/compare/` | `run.py` (the runner), `rusage.c` (peak RSS of each run), `roc/compare.roc`, and the Rust, Go, Python and Zig programs |
 | `differential/` | `value_dump.roc` (the Roc side) and `differential.py` (the `cbor2` side and the table of expected differences) |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `scale.sh`, `bench.sh`, `differential.sh`, `wasm_dev.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |
