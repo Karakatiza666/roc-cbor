@@ -4288,6 +4288,16 @@ walk = |state, rules, keep| {
 		return Err(InvalidCbor(error_pos(state)))
 	}
 	m = memo_of(state)
+	# The common case first: no map ends to keep or to use, no key order. `fast_walk` gives the same end, or `Slow`.
+	if !keep and m.map_ends.is_empty() and rules.order == Any {
+		match fast_walk(state.bytes, state.pos, rules) {
+			Ok(pos) => {
+				end = moved(state, pos, 0)
+				return if (rules.keys != Any) Ok(with_memo(end, { ..m, skips: [] })) else Ok(end)
+			}
+			Err(Slow) => {}
+		}
+	}
 	w =
 		match walk_from(state.bytes, walk_start(state.pos, m.map_ends, keep), rules)? {
 			Whole(ws) => ws
@@ -4302,6 +4312,98 @@ walk = |state, rules, keep| {
 		# With no `keep`, `w.ends` is the list of `state`.
 		Ok(end)
 	}
+}
+
+## The walk of one whole item of definite length with the checks of `item_at` and `rules`, in one loop with no
+## walk state: the position after the item. `Slow` for each case that it does not take, and for each error, so that
+## `walk_from` gives the result and the error position: an indefinite length or a break, a reserved head, a cut item,
+## more items than `max_items` or than the bytes left, more open items than `max_depth`, a key that is an array, a
+## map or a tag, and a duplicate key (`Reject` is an error; `First` and `Last` need the keys to skip).
+## `open` holds two numbers for each open item, the innermost last: the items left in it, and the index of its first
+## key in `keys` (for a map with a key rule, else `no_pos`). `keys` has the start and end of each key of the open maps.
+fast_walk : List(U8), U64, Rules -> Try(U64, [Slow])
+fast_walk = |bytes, start, rules| {
+	n = bytes.len()
+	check = rules.keys != Any
+	var $open = List.with_capacity(32)
+	var $keys = []
+	var $left = 1.U64
+	var $first = no_pos
+	var $count = 0.U64
+	var $p = start
+	var $more = Bool.True
+	while $more {
+		if $left == 0 {
+			# The innermost open item is whole: compare the keys of a map, and go back to the item it is in.
+			if $first != no_pos {
+				found = dup_keys(bytes, $keys.drop_first($first), rules) ? |_| Slow
+				if !found.is_empty() {
+					return Err(Slow)
+				}
+				$keys = $keys.take_first($first)
+			}
+			k = $open.len()
+			if k == 0 {
+				$more = Bool.False
+			} else {
+				$left = $open.get(k - 2) ?? 0
+				$first = $open.get(k - 1) ?? no_pos
+				$open = $open.drop_last(2)
+			}
+		} else {
+			b = bytes.get($p) ? |_| Slow
+			major = b.shr_zf_wrap(5)
+			info = b.bitwise_and(31)
+			var $arg = info.to_u64()
+			var $q = $p + 1
+			if info >= 24 {
+				size =
+					match info {
+						24 => 1
+						25 => 2
+						26 => 4
+						27 => 8
+						_ => return Err(Slow)
+					}
+				if $q + size > n {
+					return Err(Slow)
+				}
+				$arg = get_be(bytes, $q, size)
+				least = if (size == 1) 24 else (1.U64).shl_wrap((4 * size).to_u8_wrap())
+				if rules.shortest_heads and major != 7 and $arg < least {
+					return Err(Slow)
+				}
+				$q = $q + size
+			}
+			if $count >= rules.max_items {
+				return Err(Slow)
+			}
+			$count = $count + 1
+			is_key = $first != no_pos and $left % 2 == 0
+			$left = $left - 1
+			if major == 2 or major == 3 {
+				if $arg > n - $q or (major == 3 and !valid_utf8(bytes, $q, $arg)) {
+					return Err(Slow)
+				}
+				$q = $q + $arg
+			} else if major >= 4 and major <= 6 {
+				if is_key or $open.len() // 2 >= rules.max_depth or (major != 6 and $arg > n - $q) {
+					return Err(Slow)
+				}
+				$open = $open.append($left).append($first)
+				$left = if (major == 4) $arg else if (major == 5) 2 * $arg else 1
+				$first = if (check and major == 5) $keys.len() else no_pos
+			} else if b == 0xf8 and $arg < 32 {
+				# A simple value of 2 bytes below 32 is not well formed (RFC 8949 3.3).
+				return Err(Slow)
+			}
+			if is_key {
+				$keys = $keys.append($p).append($q)
+			}
+			$p = $q
+		}
+	}
+	Ok($p)
 }
 
 ## The state of a walk of one item, kept between two calls of `walk_from`. Each position is in the bytes of the walk.
@@ -6962,6 +7064,68 @@ expect walk(reader(List.repeat(0x81, 513).append(0x00)), strict, Bool.False).map
 ## A walk with `keep` gives the start and end of each map. A later walk takes the end of a map from `map_ends`.
 expect walk(reader([0x81, 0xa1, 0x01, 0xa0]), loose, Bool.True).map_ok(|s| memo_of(s).map_ends) == Ok([1, 4])
 expect skip(with_memo(reader([0x81, 0xa1, 0x01, 0xa0]), { ..no_memo, map_ends: [1, 2] })).map_ok(|s| s.pos) == Ok(2)
+
+## `walk` takes the fast path (`fast_walk`) when it can: it gives the same end, the same keys to skip, and the same
+## error position as `walk_from` alone. Each case where `fast_walk` gives `Slow` is here: an error of a head, of a
+## string, of UTF-8 and of a simple value, a cut item, a count larger than the bytes, an indefinite length, the
+## depth and item limits, a key that is a map, and a duplicate key with each rule.
+general_walk : List(U8), Rules -> Try((U64, List(U64)), [InvalidCbor(U64)])
+general_walk = |bytes, rules|
+	match walk_from(bytes, walk_start(0, [], Bool.False), rules)? {
+		Whole(ws) => Ok((ws.pos, ws.skips.sort_with(|a, b| if (a < b) Before else if (a > b) After else Same)))
+		Cut(ws) => Err(InvalidCbor(cut_pos(bytes, ws)))
+	}
+
+same_as_general : List(U8), Rules -> Bool
+same_as_general = |bytes, rules|
+	walk(reader(bytes), rules, Bool.False).map_ok(|s| (s.pos, memo_of(s).skips)) == general_walk(bytes, rules)
+
+fast_walk_inputs : List(List(U8))
+fast_walk_inputs = [
+	[0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x82, 0x01, 0xf9, 0x3c, 0x00],
+	[0xa2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02],
+	[0xa3, 0x61, 0x61, 0x01, 0x61, 0x62, 0x02, 0x61, 0x61, 0x03],
+	[0xa2, 0x01, 0x02, 0x01, 0x03],
+	[0xa1, 0xa0, 0x01],
+	[0xa1, 0x81, 0x01, 0x02],
+	[0x81, 0x18, 0x01],
+	[0x82, 0x01],
+	[0x9a, 0xff, 0xff, 0xff, 0xff, 0x00],
+	[0x62, 0x61],
+	[0x62, 0xc3, 0x28],
+	[0x63, 0xe6, 0xbc, 0xa2],
+	[0xf8, 0x1f],
+	[0xf8, 0x20],
+	[0x1c],
+	[0xff],
+	[0x9f, 0x01, 0xff],
+	[0x82, 0x5f, 0x41, 0x01, 0xff, 0x02],
+	[0xdb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+	[0xc1, 0xc2, 0x40],
+	[0xfb, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+	[0x19, 0x00, 0x01],
+	[],
+	List.repeat(0x81, 512).append(0x00),
+	List.repeat(0x81, 513).append(0x00),
+	[0x83, 0xa1, 0x61, 0x6b, 0x01, 0xa2, 0x61, 0x6b, 0x01, 0x61, 0x6b, 0x02, 0x00],
+]
+
+expect fast_walk_inputs.all(|b| same_as_general(b, strict))
+expect fast_walk_inputs.all(|b| same_as_general(b, loose))
+expect fast_walk_inputs.all(|b| same_as_general(b, any_length))
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, keys: First }))
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, keys: Last }))
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_items: 3 }))
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_depth: 1 }))
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, shortest_heads: Bool.False }))
+
+## Each cut of a record list: the error at the same position.
+expect {
+	bytes = [0x82, 0xa2, 0x62, 0x69, 0x64, 0x01, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x62, 0x78, 0x79, 0xa0]
+	cuts : List(U64)
+	cuts = (0.U64).until(bytes.len() + 1).collect()
+	cuts.all(|n| same_as_general(bytes.take_first(n), strict))
+}
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
 ## parts (a walk of the first part, then a walk of the whole prefix from its `Cut` state) give the same result,
