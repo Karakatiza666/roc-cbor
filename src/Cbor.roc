@@ -3908,12 +3908,20 @@ put_value = |out, value| {
 					}
 					Array(items) => {
 						$out = put_head($out, 4, items.len())
-						$todo = $todo.concat(items.rev())
+						# The items in reverse order, with no reversed copy of the list.
+						var $i = items.len()
+						while $i > 0 {
+							$i = $i - 1
+							$todo = $todo.append(items.get($i) ?? Null)
+						}
 					}
 					Map(map) => {
 						pairs = map.to_list()
 						$out = put_head($out, 5, pairs.len())
-						for (k, x) in pairs.rev() {
+						var $j = pairs.len()
+						while $j > 0 {
+							$j = $j - 1
+							(k, x) = pairs.get($j) ?? (Null, Null)
 							$todo = $todo.append(x).append(k)
 						}
 					}
