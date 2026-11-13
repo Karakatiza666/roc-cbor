@@ -3150,9 +3150,14 @@ plain_at = |cbor, state| state.raw == 0 and state.pos != cbor.content.at and cbo
 ## A text of 255 bytes or less with a head of 1 or 2 bytes (`60` to `78`) at a plain position (`plain_at`): the fast path of
 ## `parse_str` and of a record key. `NotShort` for each other case, and for invalid UTF-8 (the slow path gives the error).
 short_text : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [NotShort])
-short_text = |cbor, state| {
+short_text = |cbor, state| if (plain_at(cbor, state)) short_text_at(state) else Err(NotShort)
+
+## `short_text` with no check of the position, for a reader that reads the text where it is (a `Dict` key, `text`).
+## Not in a byte string read as a `List(U8)` (`raw`).
+short_text_at : Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [NotShort])
+short_text_at = |state| {
 	b = state.bytes.get(state.pos) ? |_| NotShort
-	if b < 0x60 or b > 0x78 or !plain_at(cbor, state) {
+	if b < 0x60 or b > 0x78 or state.raw > 0 {
 		return Err(NotShort)
 	}
 	# `78`: the length is the next byte (24 to 255 bytes).
@@ -4273,6 +4278,10 @@ get_be = |bytes, start, size| {
 
 text : Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64)])
 text = |state| {
+	match short_text_at(state) {
+		Ok(short) => return Ok(short)
+		Err(NotShort) => {}
+	}
 	t = text_head(state)?
 	value = Str.from_utf8(t.name) ? |_| InvalidCbor(state.pos)
 	Ok({ value, rest: t.rest })
@@ -7470,6 +7479,20 @@ expect {
 	r : Try({ a : U64 }, _)
 	r = Cbor.parse([0xa4, 0x61, 0x6d, 0xa1, 0x01, 0x02, 0x61, 0x6c, 0x82, 0x01, 0x02, 0x61, 0x6e, 0x81, 0x81, 0x01, 0x61, 0x61, 0x05])
 	r == Ok({ a: 5 })
+}
+
+## A Dict(Str, U64) key of 24 bytes or more (a 2-byte head) reads on the fast path of text.
+expect {
+	r : Try(Dict(Str, U64), _)
+	r = Cbor.parse([0xa1, 0x78, 0x18].concat(List.repeat('k', 24)).append(0x01))
+	r == Ok(Dict.from_list([(Str.repeat("k", 24), 1)]))
+}
+
+## A Dict(Str, U64) key with invalid UTF-8 is an error at the key (the general path).
+expect {
+	r : Try(Dict(Str, U64), _)
+	r = Cbor.parse([0xa1, 0x62, 0xc3, 0x28, 0x01])
+	r == Err(InvalidCbor(1))
 }
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
