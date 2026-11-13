@@ -1,8 +1,9 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.1/GDoZFRDnzMRiVk9nE8wdWn52btGsM1GhcY9VDKqy9f1Y.tar.zst",
 	pkg: "../src/main.roc",
 }
 
+import fuzz.Arbitrary
 import fuzz.Fuzz
 import pkg.Cbor
 
@@ -23,7 +24,7 @@ Shape : [Dot, Box({ w : U32, label : Str }), Size(U64), Span(I64, Str), Nest(Kin
 Act := [Create, NotFound, SetMode(Kind), V2].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Act, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Act, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Act.(parsed.value), rest: parsed.rest })
@@ -234,12 +235,29 @@ test! = |g| {
 	if (back == Ok(value) and external == back and ok and rows == internal) Fuzz.keep else crash "a union did not read back"
 }
 
+## The property's value, from the input bytes: the generator reads them as its entropy, as roc-fuzz's own
+## typed inputs do. The value type holds `Cbor` encoders, so it cannot have roc-fuzz's derived input format.
+input_of : List(U8) -> { sample : Sample, layout : Layout }
+input_of = |bytes| ({ sample: { shape, shapes: Fuzz.list(shape, 3), act, acts: Fuzz.list(act, 3) }.Fuzz, layout }.Fuzz)(Arbitrary.new(bytes)).value
+
+## An example input: the bytes 0 to 255, in order.
+ramp : List(U8)
+ramp = {
+	var $out = []
+	for n in 0..<256 {
+		$out = $out.append(n.to_u8_wrap())
+	}
+	$out
+}
+
 target = Fuzz.target_with!({
 	name: "unions",
-	generator: {
-		sample: { shape, shapes: Fuzz.list(shape, 3), act, acts: Fuzz.list(act, 3) }.Fuzz,
-		layout,
-	}.Fuzz,
-	test!,
-	show: |g| Str.inspect(g),
+	examples: [
+		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "short", revision: "1", make: || [0x01, 0x82, 0x18, 0x2a, 0xa1, 0x61, 0x61, 0x00] }),
+		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
+	],
+	generator: Fuzz.raw_bytes,
+	test!: |bytes| test!(input_of(bytes)),
+	show: |bytes| Str.inspect(input_of(bytes)),
 })

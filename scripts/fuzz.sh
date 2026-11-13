@@ -22,14 +22,15 @@ for f in fuzz/*.roc; do
 	fi
 	rm -rf "$work/art-$name" "$work/corpus-$name"
 	mkdir -p "$work/art-$name" "$work/corpus-$name"
-	if "$work/$name" run "$work/corpus-$name" --runs="$runs" --seed=1 --max-input-size=4096 \
-		--dictionary=fuzz/cbor.dict --artifact-dir="$work/art-$name" >"$work/$name.log" 2>&1; then
+	# roc-fuzz 0.6.1: `run` checks the declared examples, then explores. --time=0 leaves the bound to --runs.
+	if "$work/$name" run "$work/corpus-$name" --runs="$runs" --time=0 --seed=1 --max-input-size=4096 \
+		--dictionary=fuzz/cbor.dict --report-dir="$work/art-$name" >"$work/$name.log" 2>&1; then
 		echo "$name: pass, $runs runs"
 	else
 		status=1
 		echo "$name: FAIL"
 		tail -n 30 "$work/$name.log"
-		for a in "$work/art-$name"/*; do
+		for a in "$work/art-$name"/failures/*; do
 			[ -e "$a" ] && "$work/$name" show "$a" || true
 		done
 	fi
