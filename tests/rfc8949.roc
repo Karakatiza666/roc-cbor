@@ -26,7 +26,7 @@ writes : a, Str -> Bool where [a.Cbor.Encodable([])]
 writes = |value, h| Cbor.encode(value) == hex(h)
 
 ## The hex text `h` parses to `value`.
-reads : a, Str -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+reads : a, Str -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable(Cbor.Error)]
 reads = |value, h| {
 	r : Try(a, _)
 	r = Cbor.parse(hex(h))
@@ -37,7 +37,7 @@ reads = |value, h| {
 }
 
 ## The hex text `h` parses to `value` with the lenient reads `allow`.
-reads_with : a, Str, List(Cbor.Leniency) -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+reads_with : a, Str, List(Cbor.Leniency) -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable(Cbor.Error)]
 reads_with = |value, h, allow| {
 	r : Try(a, _)
 	r = Cbor.parse_with(hex(h), { allow: allow })
@@ -48,11 +48,11 @@ reads_with = |value, h, allow| {
 }
 
 ## Both: the shortest form of the RFC.
-both : a, Str -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable([InvalidCbor(U64), ..errs]), a.Cbor.Encodable([])]
+both : a, Str -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Parseable(Cbor.Error), a.Cbor.Encodable([])]
 both = |value, h| writes(value, h) and reads(value, h)
 
 ## The hex text `h` parsed as the type of `witness` is `Err(InvalidCbor(pos))`. Gives `pos`.
-error_at : a, Str -> Try(U64, [Parsed, Other]) where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+error_at : a, Str -> Try(U64, [Parsed, Other]) where [a.Cbor.Parseable(Cbor.Error)]
 error_at = |_, h| {
 	r : Try(a, _)
 	r = Cbor.parse(hex(h))

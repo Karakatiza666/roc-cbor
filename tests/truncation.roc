@@ -18,6 +18,7 @@ value_at = |bytes, options| {
 	match r {
 		Ok(_) => Ok({})
 		Err(InvalidCbor(p)) => Err(At(p))
+		Err(MissingRequiredField(_)) => Err(At(U64.highest))
 	}
 }
 

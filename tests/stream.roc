@@ -29,7 +29,7 @@ Errs : [InvalidCbor(U64), TooLarge(U64), MissingRequiredField(Str)]
 
 ## The items that `start` gives when it gets `chunks` one at a time with `push`, then `finish`. `end` is `Ok` after
 ## `finish`, else the error. The loop is bounded by the chunks.
-drive : Cbor.Items, List(List(U8)) -> { values : List(a), end : Try({}, Errs) } where [a.Cbor.Parseable(Errs)]
+drive : Cbor.Items, List(List(U8)) -> { values : List(a), end : Try({}, Errs) } where [a.Cbor.Parseable(Cbor.Error)]
 drive = |start, chunks| {
 	var $items = start
 	var $values = []
@@ -59,16 +59,17 @@ drive = |start, chunks| {
 }
 
 ## The error of `finish` in the union of the tests.
-finished : Try({}, [InvalidCbor(U64), TooLarge(U64)]) -> Try({}, Errs)
+finished : Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)]) -> Try({}, Errs)
 finished = |r|
 	match r {
 		Ok(_) => Ok({})
 		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
+		Err(MissingRequiredField(f)) => Err(MissingRequiredField(f))
 		Err(TooLarge(p)) => Err(TooLarge(p))
 	}
 
 ## The result of `drive` as one `Try`: the items, or the error.
-stream : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+stream : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Cbor.Error)]
 stream = |start, chunks| {
 	r = drive(start, chunks)
 	match r.end {
@@ -98,7 +99,7 @@ splits = |bytes| {
 }
 
 ## Each split of `bytes` given to `start` gives `want`.
-each_split : Cbor.Items, List(U8), Try(List(a), Errs) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+each_split : Cbor.Items, List(U8), Try(List(a), Errs) -> Bool where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 each_split = |start, bytes, want| {
 	var $all = Bool.True
 	for chunks in splits(bytes) {
@@ -113,14 +114,14 @@ each_split = |start, bytes, want| {
 
 ## `Items.array` agrees with `parse_with` as a `List(a)` for each split of `bytes`.
 ## `read` is `parse_with` for one item type (a `List(a)` cannot be parsed in a generic function).
-array_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+array_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 array_agrees = |bytes, options, read| {
 	want = read(bytes, options)
 	each_split(Cbor.Items.array(options), bytes, want)
 }
 
 ## A model of `parse_sequence_with`: `parse_prefix_with` for each item. The positions are in all of `bytes`.
-sequence_model : List(U8), Cbor.Options -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+sequence_model : List(U8), Cbor.Options -> Try(List(a), Errs) where [a.Cbor.Parseable(Cbor.Error)]
 sequence_model = |bytes, options| {
 	var $rest = bytes
 	var $values = []
@@ -141,7 +142,7 @@ sequence_model = |bytes, options| {
 }
 
 ## `Items.sequence` and `parse_sequence_with` agree with the model for each split of `bytes`.
-sequence_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+sequence_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 sequence_agrees = |bytes, options, _read| {
 	want : Try(List(a), Errs)
 	want = sequence_model(bytes, options)
@@ -155,7 +156,7 @@ split_u64s : Cbor.Items, List(U8), Try(List(U64), Errs) -> Bool
 split_u64s = |start, bytes, want| each_split(start, bytes, want)
 
 ## `array_agrees` for `bytes` and for each prefix of it (a cut input).
-array_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+array_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 array_prefixes_agree = |bytes, options, type| {
 	var $all = Bool.True
 	for n in 0..=bytes.len() {
@@ -167,7 +168,7 @@ array_prefixes_agree = |bytes, options, type| {
 }
 
 ## `sequence_agrees` for `bytes` and for each prefix of it.
-sequence_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+sequence_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 sequence_prefixes_agree = |bytes, options, type| {
 	var $all = Bool.True
 	for n in 0..=bytes.len() {

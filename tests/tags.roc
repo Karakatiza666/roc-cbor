@@ -29,7 +29,7 @@ hex = |s|
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		bytes = Cbor.parse_bytes(encoding, tag.rest)?
@@ -48,7 +48,7 @@ Uuid := List(U8).{
 Instant := { secs : I64, nanos : U32 }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Instant, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Instant, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 12 {
@@ -68,7 +68,7 @@ Instant := { secs : I64, nanos : U32 }.{
 Point := { x : F64, y : F64 }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Point, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Point, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 88 {
@@ -84,7 +84,7 @@ Point := { x : F64, y : F64 }.{
 Link := { table : Str, key : Cbor.Value }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Link, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Link, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 8 {
@@ -103,7 +103,7 @@ Link := { table : Str, key : Cbor.Value }.{
 Cell := [Number(I64), Word(Str), When(Instant), Nothing].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {
@@ -247,7 +247,7 @@ expect {
 Kinds := List(Cbor.Kind).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Kinds, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Kinds, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		start = Cbor.parse_list_start(encoding, state)?
 		match start {
@@ -320,7 +320,7 @@ vmap = |pairs|
 		Err(_) => crash "a duplicate key in a test map"
 	}
 
-value_of : Str -> Try(Cbor.Value, [InvalidCbor(U64)])
+value_of : Str -> Try(Cbor.Value, Cbor.Error)
 value_of = |h| Cbor.parse(hex(h))
 
 ## Each variant reads, and writes back to the same bytes.
@@ -420,7 +420,7 @@ expect {
 expect value_of_bytes(List.repeat(0x81, 100000).append(0x00)) == Err(InvalidCbor(512))
 expect value_of_bytes(List.repeat(0xc1, 100000).append(0x00)) == Err(InvalidCbor(512))
 
-value_of_bytes : List(U8) -> Try(Cbor.Value, [InvalidCbor(U64)])
+value_of_bytes : List(U8) -> Try(Cbor.Value, Cbor.Error)
 value_of_bytes = |bytes| Cbor.parse(bytes)
 
 ## A Cbor.Value field of a record: a null value is `Null`. With `NullAsAbsent` it is no key, as for any field.
@@ -544,7 +544,7 @@ expect {
 
 # Option dec_from_text
 
-dec_text : Str -> Try(Dec, [InvalidCbor(U64)])
+dec_text : Str -> Try(Dec, Cbor.Error)
 dec_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [DecFromText] })
 
 expect dec_text("12.50") == Ok(12.5)

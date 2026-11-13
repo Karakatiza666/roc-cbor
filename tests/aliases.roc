@@ -12,7 +12,7 @@ Id := U64.{
 	is_eq : _
 	encoder_for : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| {
 		inner = U64.parser_for(encoding)
 		|state| {
@@ -23,13 +23,12 @@ Id := U64.{
 }
 
 ## A function with Readable. It matches MissingRequiredField(field) and InvalidCbor(pos) in the generic code.
-read_text : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
+read_text : List(U8) -> Try(a, Str) where [a.Cbor.Readable]
 read_text = |bytes|
 	match Cbor.parse(bytes) {
 		Ok(v) => Ok(v)
 		Err(MissingRequiredField(field)) => Err("missing ${field}")
 		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
-		Err(_) => Err("other")
 	}
 
 ## A function with Writable.
@@ -37,7 +36,7 @@ write_all : List(a) -> List(List(U8)) where [a.Cbor.Writable]
 write_all = |items| items.map(|item| Cbor.encode(item))
 
 ## Readable and Writable in one function: the round trip of a value.
-round_trips : a -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Writable, a.Cbor.Readable(errs)]
+round_trips : a -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Writable, a.Cbor.Readable]
 round_trips = |value| {
 	back : Try(a, _)
 	back = Cbor.parse(Cbor.encode(value))
@@ -48,10 +47,10 @@ round_trips = |value| {
 }
 
 ## A function with Parseable, and a function with Readable that calls it.
-parseable_inner : List(U8) -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+parseable_inner : List(U8) -> Try(a, Cbor.Error) where [a.Cbor.Parseable(Cbor.Error)]
 parseable_inner = |bytes| Cbor.parse(bytes)
 
-via_parseable : List(U8) -> Try(a, [InvalidCbor(U64), MissingRequiredField(Str), ..errs]) where [a.Cbor.Readable(errs)]
+via_parseable : List(U8) -> Try(a, Cbor.Error) where [a.Cbor.Readable]
 via_parseable = |bytes| parseable_inner(bytes)
 
 # Readable works for a record (MissingRequiredField and InvalidCbor)

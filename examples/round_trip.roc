@@ -25,7 +25,7 @@ Pkg : {
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
@@ -42,7 +42,7 @@ Uuid := List(U8).{
 
 ## A key that is a number or text: Cbor.peek picks the reader.
 Key := [Number(U64), Name(Str)].{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Key, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Key, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => Cbor.parse_u64(encoding, state).map_ok(|n| { value: Key.Number(n.value), rest: n.rest })
@@ -53,7 +53,7 @@ Key := [Number(U64), Name(Str)].{
 
 ## An action of a peer in upper snake case, "NOT_FOUND": Cbor.parse_union gives the type its own tag name case.
 Action := [Create, NotFound].{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		options : Cbor.UnionOptions
 		options = { tags: Upper }
@@ -67,7 +67,7 @@ to_cbor : a -> List(U8) where [a.Cbor.Encodable([])]
 to_cbor = |value| Cbor.encode(value)
 
 ## A function of your own that wraps `Cbor.parse` repeats its constraint.
-from_cbor : List(U8) -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+from_cbor : List(U8) -> Try(a, Cbor.Error) where [a.Cbor.Parseable(Cbor.Error)]
 from_cbor = |bytes| Cbor.parse(bytes)
 
 hex : List(U8) -> Str

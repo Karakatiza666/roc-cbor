@@ -151,7 +151,7 @@ expect {
 Id := U64.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
@@ -165,7 +165,7 @@ Id := U64.{
 Cell := [Number(I64), Word(Str)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {
@@ -366,7 +366,7 @@ expect Cbor.encode(Check(7)) == map([("Check", n(7))])
 Action := [Create, Update, NotFound, V2].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Action.(parsed.value), rest: parsed.rest })
@@ -377,7 +377,7 @@ Action := [Create, Update, NotFound, V2].{
 Op := [Add({ path : Str, value : I64 }), Remove({ path : Str }), MoveTo({ from : Str, path : Str })].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: Internal({ tag: "op", content: "value" }), tags: Lower }, state)?
 		Ok({ value: Op.(parsed.value), rest: parsed.rest })
@@ -452,7 +452,7 @@ expect {
 Step := [Run(Pay), Stop].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Step, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Step, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: External, tags: Upper }, state)?
 		Ok({ value: Step.(parsed.value), rest: parsed.rest })
@@ -472,7 +472,7 @@ expect {
 Wrapper := { a : [Create, Delete] }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Wrapper, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Wrapper, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Wrapper.(parsed.value), rest: parsed.rest })
@@ -491,7 +491,7 @@ expect {
 Mode := [Fast, SlowDown(U64)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Mode, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Mode, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Lower }, state)?
 		Ok({ value: Mode.(parsed.value), rest: parsed.rest })

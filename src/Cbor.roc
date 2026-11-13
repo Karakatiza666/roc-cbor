@@ -394,8 +394,13 @@ Cbor :: {
 			)
 	}
 
+	## The error of every read: the position of the first byte that is not valid, not in the profile, or does not
+	## fit the type (`InvalidCbor`), or a required field of a record that is absent, by its Roc name
+	## (`MissingRequiredField`). The codec protocol makes it the one error of every operation of a derived parser.
+	Error : [InvalidCbor(U64), MissingRequiredField(Str)]
+
 	## A type that `Cbor.parse` can read. Use it in the `where` clause of a function that calls
-	## `Cbor.parse` with a type variable: `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]`.
+	## `Cbor.parse` with a type variable: `where [a.Cbor.Parseable(Cbor.Error)]`.
 	a.Parseable(errs) :
 		where [
 			a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, errs)),
@@ -408,14 +413,10 @@ Cbor :: {
 			a.encoder_for : Cbor -> (a, Cbor.Writer -> Try(Cbor.Writer, err)),
 		]
 
-	## The short form of `Cbor.Parseable`. The errors `InvalidCbor(U64)` and
-	## `MissingRequiredField(Str)` are in the alias. `errs` is the rest of the open union.
-	## `where [a.Cbor.Readable(errs)]` is the same as
-	## `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])]`.
-	## The compiler does not allow `..` in an alias, so a form with no `errs` is not possible.
-	a.Readable(errs) :
+	## The short form of `Cbor.Parseable(Cbor.Error)`: `where [a.Cbor.Readable]`.
+	a.Readable :
 		where [
-			a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str), ..errs])),
+			a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, Cbor.Error)),
 		]
 
 	## The short form of `Cbor.Encodable([])`: a type that `Cbor.encode` can write. Use it as
@@ -435,7 +436,7 @@ Cbor :: {
 
 		## Reads an array (major type 4) of integers 0 to 255, also with no option. Another item is an error at the item.
 		## A float item needs `FloatToInt`. Text is never an item.
-		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.U8Array, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.U8Array, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 		parser_for = |encoding| {
 			|tagged| {
 				state = untag(encoding, tagged)?
@@ -483,7 +484,7 @@ Cbor :: {
 
 		## Reads a byte string (major type 2) as a part of the input. As a `List(U8)`, it also reads an empty array,
 		## with `BytesFromArray` an array of integers 0 to 255, and with `BytesFromBase64` base64 text. Another item is an error.
-		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.Bytes, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.Bytes, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 		parser_for = |encoding|
 			|tagged| {
 				state = untag(encoding, tagged)?
@@ -564,7 +565,7 @@ Cbor :: {
 		## Reads any one item. The option `ignore_tags` does not apply: each tag stays. More than 512 nested arrays,
 		## maps and tags is an error at the head that goes too deep. As the one payload of an internal tag (`Cbor.Unions`),
 		## it reads the item at the content key.
-		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.Value, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.Value, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 		parser_for = |encoding| |state| read_value(at_content(encoding, state)?)
 
 		## Writes the item, with the shortest heads (also for the counts of arrays and maps).
@@ -723,7 +724,7 @@ Cbor :: {
 		to_hash : _
 
 		## A `Raw` of `bytes`: they must be one item with the strict checks of `Cbor.parse`.
-		from_bytes : List(U8) -> Try(Cbor.Raw, [InvalidCbor(U64)])
+		from_bytes : List(U8) -> Try(Cbor.Raw, [InvalidCbor(U64), MissingRequiredField(Str)])
 		from_bytes = |bytes| Cbor.parse(bytes)
 
 		## The bytes of the item.
@@ -732,7 +733,7 @@ Cbor :: {
 
 		## Reads the bytes of one item. The option `ignore_tags` does not apply: the bytes keep each tag.
 		## As the one payload of an internal tag (`Cbor.Unions`), it reads the item at the content key.
-		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.Raw, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+		parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cbor.Raw, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 		parser_for = |encoding| |tagged| {
 			state = at_content(encoding, tagged)?
 			end = skip(state)?
@@ -960,7 +961,7 @@ Cbor :: {
 		## The items that are whole after the bytes of `chunk`, in order, as the type of the annotation, and the decoder
 		## of the bytes after them in `rest`; or in `rest` the error, after the items before it. A `push` of `[]` changes
 		## nothing. A chunk of C bytes gives C items or less, and their memory is the memory of `parse_with` of them.
-		push : Cbor.Items, List(U8) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), TooLarge(U64), ..errs]) } where [a.Parseable([InvalidCbor(U64), TooLarge(U64), ..errs])]
+		push : Cbor.Items, List(U8) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)]) } where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 		push = |items, chunk| {
 			Shape : a
 			parse_shape = Shape.parser_for(items.cbor)
@@ -970,7 +971,7 @@ Cbor :: {
 		## The end of the input: `Ok({})` when the root array, or the last item of the sequence, ended at the last byte.
 		## Else the error of the cut item, or of the open array. Each item is self-delimiting, so `push` already gave
 		## each whole item: `finish` gives no value.
-		finish : Cbor.Items -> Try({}, [InvalidCbor(U64), TooLarge(U64)])
+		finish : Cbor.Items -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)])
 		finish = |items| finish_items(items)
 
 		## The position in the stream of the first byte that is not part of an item or a head that `push` gave.
@@ -989,7 +990,7 @@ Cbor :: {
 		## 	store_row!(row?)
 		## }
 		## ```
-		from_stream : Cbor.Items, Stream(Try(List(U8), e)) -> Stream(Try(a, [InvalidCbor(U64), TooLarge(U64), Input(e), ..errs])) where [a.Parseable([InvalidCbor(U64), TooLarge(U64), Input(e), ..errs])]
+		from_stream : Cbor.Items, Stream(Try(List(U8), e)) -> Stream(Try(a, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), Input(e)])) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 		from_stream = |start, source| {
 			decode_stream(
 				start,
@@ -999,6 +1000,7 @@ Cbor :: {
 					finish_error: |e|
 						match e {
 							InvalidCbor(p) => InvalidCbor(p)
+							MissingRequiredField(f) => MissingRequiredField(f)
 							TooLarge(p) => TooLarge(p)
 						},
 					spent: Cbor.Items.sequence({}),
@@ -1062,7 +1064,7 @@ Cbor :: {
 		## of the annotation, and the decoder of the bytes after them in `rest`; or in `rest` the error, after the
 		## entries before it. The key reads as a key of a `Dict(k, v)`: only the form that `Cbor.encode` writes for it.
 		## A `push` of `[]` changes nothing. A chunk of C bytes gives C/2 entries or less.
-		push : Cbor.Entries, List(U8) -> { values : List((k, v)), rest : Try(Cbor.Entries, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..errs]) } where [k.Parseable([InvalidCbor(U64), TooLarge(U64), NotStreamable, ..errs]), k.Encodable([]), v.Parseable([InvalidCbor(U64), TooLarge(U64), NotStreamable, ..errs])]
+		push : Cbor.Entries, List(U8) -> { values : List((k, v)), rest : Try(Cbor.Entries, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable]) } where [k.Parseable([InvalidCbor(U64), MissingRequiredField(Str)]), k.Encodable([]), v.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 		push = |entries, chunk| {
 			KeyShape : k
 			ValueShape : v
@@ -1074,7 +1076,7 @@ Cbor :: {
 
 		## The end of the input: `Ok({})` when the map ended at the last byte, else the error of the cut entry or of
 		## the open map. `finish` gives no entry: `push` gave each one, also the held entry of `Sorted` and `Last`.
-		finish : Cbor.Entries -> Try({}, [InvalidCbor(U64), TooLarge(U64), NotStreamable])
+		finish : Cbor.Entries -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable])
 		finish = |entries| finish_entries(entries)
 
 		## The position in the stream of the first byte that is not part of an entry or a head that `push` gave
@@ -1084,7 +1086,7 @@ Cbor :: {
 
 		## A stream of the entries as `(key, value)`, with the bytes of the chunks of `source`, as `Items.from_stream`.
 		## A source error `e` is `Err(Input(e))`. An error ends the stream.
-		from_stream : Cbor.Entries, Stream(Try(List(U8), e)) -> Stream(Try((k, v), [InvalidCbor(U64), TooLarge(U64), NotStreamable, Input(e), ..errs])) where [k.Parseable([InvalidCbor(U64), TooLarge(U64), NotStreamable, Input(e), ..errs]), k.Encodable([]), v.Parseable([InvalidCbor(U64), TooLarge(U64), NotStreamable, Input(e), ..errs])]
+		from_stream : Cbor.Entries, Stream(Try(List(U8), e)) -> Stream(Try((k, v), [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, Input(e)])) where [k.Parseable([InvalidCbor(U64), MissingRequiredField(Str)]), k.Encodable([]), v.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 		from_stream = |start, source| {
 			decode_stream(
 				start,
@@ -1094,6 +1096,7 @@ Cbor :: {
 					finish_error: |e|
 						match e {
 							InvalidCbor(p) => InvalidCbor(p)
+							MissingRequiredField(f) => MissingRequiredField(f)
 							TooLarge(p) => TooLarge(p)
 							NotStreamable => NotStreamable
 						},
@@ -1135,7 +1138,7 @@ Cbor :: {
 	## no duplicate key, 512 nested arrays, maps and tags or less. Then it must fit the type.
 	## Bytes after the item are an error at the position of the first extra byte.
 	## The same as `parse_with(bytes, {})`.
-	parse : List(U8) -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse : List(U8) -> Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse = |bytes| Cbor.parse_with(bytes, {})
 
 	## Like `parse`, with options (`Cbor.Options`).
@@ -1144,7 +1147,7 @@ Cbor :: {
 	## row : Try({ id : I64, active : Bool }, _)
 	## row = Cbor.parse_with(bytes, { fields: Camel, allow: Cbor.sql_rows })
 	## ```
-	parse_with : List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_with : List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_with = |bytes, options| {
 		setup = parse_setup(options)
 		Shape : a
@@ -1161,11 +1164,11 @@ Cbor :: {
 	## key : Try({ value : Cbor.Value, rest : List(U8) }, _)
 	## key = Cbor.parse_prefix(bytes)
 	## ```
-	parse_prefix : List(U8) -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_prefix : List(U8) -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_prefix = |bytes| Cbor.parse_prefix_with(bytes, {})
 
 	## Like `parse_prefix`, with options (`Cbor.Options`).
-	parse_prefix_with : List(U8), Cbor.Options -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_prefix_with : List(U8), Cbor.Options -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_prefix_with = |bytes, options| {
 		setup = parse_setup(options)
 		Shape : a
@@ -1177,11 +1180,11 @@ Cbor :: {
 	## Reads a CBOR sequence (RFC 8742): zero or more items of the type `a`, one after the other, with no
 	## head before them. Empty bytes give `[]`. Each item has the checks of `parse` (and `max_items` counts the items of each one).
 	## The position of an error is in all of `bytes`.
-	parse_sequence : List(U8) -> Try(List(a), [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_sequence : List(U8) -> Try(List(a), [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_sequence = |bytes| Cbor.parse_sequence_with(bytes, {})
 
 	## Like `parse_sequence`, with options (`Cbor.Options`).
-	parse_sequence_with : List(U8), Cbor.Options -> Try(List(a), [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_sequence_with : List(U8), Cbor.Options -> Try(List(a), [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_sequence_with = |bytes, options| {
 		# The stream decoder with no `max_buffer`: all the bytes are in memory.
 		start = append_items(new_items(options, Sequence, U64.highest), bytes)
@@ -1269,7 +1272,7 @@ Cbor :: {
 
 	## Codec protocol: the error for a value that does not fit its type. A `parser_for` of your own
 	## uses it for its own errors: `Err(Cbor.invalid_value(encoding, state))` is an error at `state`.
-	invalid_value : Cbor, Cbor.Reader -> [InvalidCbor(U64)]
+	invalid_value : Cbor, Cbor.Reader -> [InvalidCbor(U64), MissingRequiredField(Str)]
 	invalid_value = |_, state| InvalidCbor(error_pos(state))
 
 	# Building blocks for a `parser_for` or an `encoder_for` of your own
@@ -1279,7 +1282,7 @@ Cbor :: {
 	## As the one payload of an internal tag (`Cbor.Unions`), it gives the kind of the item at the content key.
 	## A reserved head, or no more bytes, is an error. An item of indefinite length gives its kind (the walk of a parse
 	## without `IndefiniteLength` rejected it before).
-	peek : Cbor, Cbor.Reader -> Try(Cbor.Kind, [InvalidCbor(U64)])
+	peek : Cbor, Cbor.Reader -> Try(Cbor.Kind, [InvalidCbor(U64), MissingRequiredField(Str)])
 	peek = |encoding, tagged| {
 		state = at_content(encoding, tagged)?
 		h = head(state)?
@@ -1319,7 +1322,7 @@ Cbor :: {
 	##     }
 	## }
 	## ```
-	parse_cbor_tag : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_cbor_tag : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_cbor_tag = |encoding, tagged| {
 		state = at_content(encoding, tagged)?
 		h = head(state)?
@@ -1335,7 +1338,7 @@ Cbor :: {
 
 	## Reads one item of the type `a` at `state`, with the `parser_for` of `a`, and gives the state after it.
 	## Use it in a `parser_for` of your own, for example for the item after a tag.
-	parse_item : Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_item : Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_item = |encoding, state| {
 		Shape : a
 		parse_shape = Shape.parser_for(encoding)
@@ -1353,21 +1356,18 @@ Cbor :: {
 	# Scalars
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_str : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_str : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_str = |cbor, state| text(untag(cbor, state)?)
 
 	## A byte string (major type 2) only. Use it in a `parser_for` of your own.
-	parse_bytes : Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64)])
-	parse_bytes = |cbor, tagged| {
-		b = string_at(untag(cbor, tagged)?, 2)?
-		Ok({ value: b.bytes, rest: b.rest })
-	}
+	parse_bytes : Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
+	parse_bytes = |cbor, tagged| bytes_item(cbor, tagged)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads `false` and `true`. With `BoolFromInt`, also the integers 0 and 1 (a SQL database has no boolean),
 	## with the rules of an integer type, without text: a float 0.0 or 1.0 needs `FloatToInt` too.
 	## Another integer is an error.
-	parse_bool : Cbor, Cbor.Reader -> Try({ value : Bool, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_bool : Cbor, Cbor.Reader -> Try({ value : Bool, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_bool = |cbor, tagged| {
 		state = untag(cbor, tagged)?
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
@@ -1386,7 +1386,7 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads `null`, and `undefined` with `UndefinedAsNull`. A `Try(a, [Null])` reads it as `Err(Null)`, also as a record field.
 	## With the option `ignore_tags`, a tag of the list before the `null` is also read.
-	parse_null : Cbor, Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64)])
+	parse_null : Cbor, Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_null = |cbor, tagged| {
 		state = untag(cbor, tagged)?
 		if is_null(cbor, state) {
@@ -1399,7 +1399,7 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## The first item of an array read as a list (a `List(U8)`) needs `BytesFromArray` when each item of the array is
 	## an integer 0 to 255: the writer writes such a list as a byte string. An array with another item (a null, 256) reads.
-	parse_u8 : Cbor, Cbor.Reader -> Try({ value : U8, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_u8 : Cbor, Cbor.Reader -> Try({ value : U8, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u8 = |cbor, state|
 		if state.raw > 0 {
 			# An item of a byte string read as a List(U8).
@@ -1414,49 +1414,49 @@ Cbor :: {
 		}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_u16 : Cbor, Cbor.Reader -> Try({ value : U16, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_u16 : Cbor, Cbor.Reader -> Try({ value : U16, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u16 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: narrow(n.value, state.pos)?.to_u16_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_u32 : Cbor, Cbor.Reader -> Try({ value : U32, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_u32 : Cbor, Cbor.Reader -> Try({ value : U32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u32 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: narrow(n.value, state.pos)?.to_u32_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_u64 : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_u64 : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u64 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: n.value.to_u64_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_i8 : Cbor, Cbor.Reader -> Try({ value : I8, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_i8 : Cbor, Cbor.Reader -> Try({ value : I8, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_i8 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: narrow(n.value, state.pos)?.to_i8_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_i16 : Cbor, Cbor.Reader -> Try({ value : I16, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_i16 : Cbor, Cbor.Reader -> Try({ value : I16, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_i16 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: narrow(n.value, state.pos)?.to_i16_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_i32 : Cbor, Cbor.Reader -> Try({ value : I32, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_i32 : Cbor, Cbor.Reader -> Try({ value : I32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_i32 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: narrow(n.value, state.pos)?.to_i32_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_i64 : Cbor, Cbor.Reader -> Try({ value : I64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_i64 : Cbor, Cbor.Reader -> Try({ value : I64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_i64 = |cbor, state| {
 		n = int(cbor, state)?
 		Ok({ value: n.value.to_i64_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
@@ -1464,7 +1464,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads an integer (major type 0, with the leniencies of an integer type), or a bignum (tag 2, RFC 8949 3.4.3) of 16 bytes or less.
-	parse_u128 : Cbor, Cbor.Reader -> Try({ value : U128, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_u128 : Cbor, Cbor.Reader -> Try({ value : U128, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u128 = |cbor, state| {
 		n = wide(cbor, state)?
 		if (n.negative) Err(InvalidCbor(state.pos)) else Ok({ value: n.size, rest: n.rest })
@@ -1473,7 +1473,7 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads an integer (major types 0 and 1, with the leniencies of an integer type), or a bignum (tag 2 or 3, RFC 8949 3.4.3)
 	## in the range of an I128.
-	parse_i128 : Cbor, Cbor.Reader -> Try({ value : I128, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_i128 : Cbor, Cbor.Reader -> Try({ value : I128, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_i128 = |cbor, state| {
 		n = wide(cbor, state)?
 		i = n.size.to_i128_try() ? |_| InvalidCbor(state.pos)
@@ -1482,7 +1482,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads a float, or an integer that is exact as an F64 (any integer of size 2^53 or less).
-	parse_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f64 = |cbor, state| {
 		f = float(untag(cbor, state)?)?
 		Ok({ value: f.value, rest: f.rest })
@@ -1491,7 +1491,7 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads a float, rounded to an F32, or an integer that is exact as an F32 (any integer of size 2^24 or less).
 	## A finite value outside the F32 range, and a value that is not 0 but rounds to 0, are errors.
-	parse_f32 : Cbor, Cbor.Reader -> Try({ value : F32, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_f32 : Cbor, Cbor.Reader -> Try({ value : F32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f32 = |cbor, tagged| {
 		state = untag(cbor, tagged)?
 		f = float(state)?
@@ -1513,7 +1513,7 @@ Cbor :: {
 	## significant digits, so the Dec is exact to that. NaN, an infinity and a float outside the range of a
 	## Dec are errors. Another tag is an error. Text is an error, except with the option `dec_from_text`:
 	## then text in the number form of JSON (`-1.25`, `4E+1`) reads exactly (see `Cbor.Options`).
-	parse_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_dec = |cbor, tagged| {
 		state = untag(cbor, tagged)?
 		h = head(state)?
@@ -1545,7 +1545,7 @@ Cbor :: {
 	# Containers
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_list_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_list_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_list_start = |cbor, tagged| {
 		state = untag(cbor, tagged)?
 		h = head(state)?
@@ -1574,7 +1574,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Only in an array or a byte string of indefinite length: `Done` at its break.
-	parse_list_next : Cbor, Cbor.Reader -> Try([Item(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_list_next : Cbor, Cbor.Reader -> Try([Item(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_list_next = |_, state|
 		match list_step(state)? {
 			More(s) => Ok(Item(s))
@@ -1583,7 +1583,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Only in an array or a byte string of indefinite length: `Done` at its break.
-	parse_list_after_item : Cbor, Cbor.Reader -> Try([Continue(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_list_after_item : Cbor, Cbor.Reader -> Try([Continue(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_list_after_item = |_, state|
 		match list_step(state)? {
 			More(s) => Ok(Continue(s))
@@ -1591,7 +1591,7 @@ Cbor :: {
 		}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_tuple_start : Cbor, Cbor.Reader, U64 -> Try(Cbor.Reader, [InvalidCbor(U64)])
+	parse_tuple_start : Cbor, Cbor.Reader, U64 -> Try(Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])
 
 	## With `IndefiniteLength`, an array of indefinite length with `len` items reads too.
 	parse_tuple_start = |cbor, tagged, len| {
@@ -1610,11 +1610,11 @@ Cbor :: {
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_tuple_next : Cbor, Cbor.Reader, U64, U64 -> Try(Cbor.Reader, [InvalidCbor(U64)])
+	parse_tuple_next : Cbor, Cbor.Reader, U64, U64 -> Try(Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_tuple_next = |_, state, _, _| Ok(state)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_tuple_end : Cbor, Cbor.Reader, U64 -> Try(Cbor.Reader, [InvalidCbor(U64)])
+	parse_tuple_end : Cbor, Cbor.Reader, U64 -> Try(Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_tuple_end = |cbor, state, _|
 		if cbor.read.indefinite {
 			m = memo_of(state)
@@ -1629,7 +1629,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## A record that is the one payload of an internal tag reads the map of the tag itself.
-	parse_record_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_record_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_record_start = |cbor, tagged| map_start(skip_tags(cbor, tagged))
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
@@ -1647,7 +1647,7 @@ Cbor :: {
 			Continue(Cbor.Reader),
 			Done(Cbor.Reader),
 		],
-		[InvalidCbor(U64)],
+		[InvalidCbor(U64), MissingRequiredField(Str)],
 	)
 	parse_record_field = |cbor, fields, state| {
 		if at_break(state) {
@@ -1701,17 +1701,17 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Only in a map of indefinite length: `Done` at its break.
-	parse_record_after_field : Cbor, Cbor.Reader -> Try([Continue(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_record_after_field : Cbor, Cbor.Reader -> Try([Continue(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_record_after_field = |_, state| if (at_break(state)) Ok(Done(at(state, state.pos + 1))) else Ok(Continue(state))
 
 	## Codec protocol: the derived `parser_for` of a type calls it for an unknown key (`TryField` of `parse_record_field`).
-	skip_record_field : Cbor, Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64)])
+	skip_record_field : Cbor, Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])
 	skip_record_field = |_, state| skip(state)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## A map is counted. With keys to skip (`duplicate_keys`: `First`, `Last`), it is uncounted, and
 	## `parse_dict_next` skips each entry of such a key.
-	parse_dict_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_dict_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 
 	## A `Dict` that is the one payload of an internal tag reads the item at the content key.
 	parse_dict_start = |cbor, tagged| {
@@ -1725,7 +1725,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## An uncounted map: skips the entries of keys to skip, then `Done` at the end of the map.
-	parse_dict_next : Cbor, Cbor.Reader -> Try([Entry(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_dict_next : Cbor, Cbor.Reader -> Try([Entry(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_dict_next = |_, state|
 		match dict_step(state)? {
 			More(s) => Ok(Entry(s))
@@ -1734,7 +1734,7 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## In an uncounted map: one entry less.
-	parse_dict_after_key : Cbor, Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64)])
+	parse_dict_after_key : Cbor, Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_dict_after_key = |_, state| {
 		m = memo_of(state)
 		match m.dicts.last() {
@@ -1744,7 +1744,7 @@ Cbor :: {
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
-	parse_dict_after_entry : Cbor, Cbor.Reader -> Try([Continue(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64)])
+	parse_dict_after_entry : Cbor, Cbor.Reader -> Try([Continue(Cbor.Reader), Done(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_dict_after_entry = |_, state|
 		match dict_step(state)? {
 			More(s) => Ok(Continue(s))
@@ -1758,70 +1758,75 @@ Cbor :: {
 
 	## Codec protocol: a key of a `Dict(Str, v)`, and of a tag union with no payloads: text, with no tag. A tag name that
 	## is not in the union is an error. A key of a composite type is a compile error: see the comment above.
-	parse_key_str : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_str : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_str = |_, state| text(state)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_bool : Cbor, Cbor.Reader -> Try({ value : Bool, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_bool : Cbor, Cbor.Reader -> Try({ value : Bool, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_bool = |cbor, state| exact_key(state, Cbor.parse_bool(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_u8 : Cbor, Cbor.Reader -> Try({ value : U8, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_u8 : Cbor, Cbor.Reader -> Try({ value : U8, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_u8 = |cbor, state| exact_key(state, Cbor.parse_u8(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_i8 : Cbor, Cbor.Reader -> Try({ value : I8, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_i8 : Cbor, Cbor.Reader -> Try({ value : I8, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_i8 = |cbor, state| exact_key(state, Cbor.parse_i8(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_u16 : Cbor, Cbor.Reader -> Try({ value : U16, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_u16 : Cbor, Cbor.Reader -> Try({ value : U16, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_u16 = |cbor, state| exact_key(state, Cbor.parse_u16(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_i16 : Cbor, Cbor.Reader -> Try({ value : I16, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_i16 : Cbor, Cbor.Reader -> Try({ value : I16, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_i16 = |cbor, state| exact_key(state, Cbor.parse_i16(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_u32 : Cbor, Cbor.Reader -> Try({ value : U32, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_u32 : Cbor, Cbor.Reader -> Try({ value : U32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_u32 = |cbor, state| exact_key(state, Cbor.parse_u32(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_i32 : Cbor, Cbor.Reader -> Try({ value : I32, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_i32 : Cbor, Cbor.Reader -> Try({ value : I32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_i32 = |cbor, state| exact_key(state, Cbor.parse_i32(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_u64 : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_u64 : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_u64 = |cbor, state| exact_key(state, Cbor.parse_u64(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_i64 : Cbor, Cbor.Reader -> Try({ value : I64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_i64 : Cbor, Cbor.Reader -> Try({ value : I64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_i64 = |cbor, state| exact_key(state, Cbor.parse_i64(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_u128 : Cbor, Cbor.Reader -> Try({ value : U128, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_u128 : Cbor, Cbor.Reader -> Try({ value : U128, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_u128 = |cbor, state| exact_key(state, Cbor.parse_u128(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_i128 : Cbor, Cbor.Reader -> Try({ value : I128, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_i128 : Cbor, Cbor.Reader -> Try({ value : I128, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_i128 = |cbor, state| exact_key(state, Cbor.parse_i128(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_dec = |cbor, state| exact_key(state, Cbor.parse_dec(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_f32 : Cbor, Cbor.Reader -> Try({ value : F32, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_f32 : Cbor, Cbor.Reader -> Try({ value : F32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_f32 = |cbor, state| exact_key(state, Cbor.parse_f32(cbor, state)?)
 
 	## Codec protocol: a key of a `Dict(k, v)`. Only the form that the writer writes for the value.
-	parse_key_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	parse_key_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_key_f64 = |cbor, state| exact_key(state, Cbor.parse_f64(cbor, state)?)
 
 	## Codec protocol: the derived `parser_for` of a tag union calls it. An app calls `Cbor.parse`.
 	## `External` (default): text for a tag with no payload, else a map of one entry: the tag, then its payload,
 	## or an array of its payloads when it has more than one. The same shapes as `Json`.
 	## `Internal({ tag, content })`: text, or a map with the tag name at the key `tag` (see `Cbor.Unions`).
-	parse_tag_union : Cbor, Encoding.ParseTagUnionSpec(a), Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64)])
+	## Codec protocol: the derived `parser_for` of a record calls it when a required field is absent.
+	## The error names the Roc field.
+	missing_field : Cbor, Str -> [InvalidCbor(U64), MissingRequiredField(Str)]
+	missing_field = |_, name| MissingRequiredField(name)
+
+	parse_tag_union : Cbor, Encoding.ParseTagUnionSpec(a, Cbor, Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)]), Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_tag_union = |encoding, spec, tagged| {
 		state = untag(encoding, tagged)?
 		# The options of this union: from `parse_union` for the item at this position, else from the parse.
@@ -1920,7 +1925,7 @@ Cbor :: {
 	## ```
 	##
 	## When `a` is not a tag union, the options have no effect.
-	parse_union : Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_union : Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_union = |encoding, options, tagged| {
 		state = untag(encoding, tagged)?
 		next = { at: state.pos, unions: options.?unions ?? encoding.unions, tags: options.?tags ?? Exact }
@@ -2868,13 +2873,21 @@ dec_mantissa = |state, lenient| {
 ## A bignum at `state` (RFC 8949 3.4.3): tag 2 and a byte string n, or tag 3 and n for -1 - n. n has 16 bytes or less
 ## (with no leading zero bytes). Strict, it is the preferred serialization (RFC 8949 4.2.2): no leading zero byte, and more
 ## than 8 bytes, else major type 0 or 1 is the form. `lenient` (`PaddedNumbers`) reads both.
+## A byte string (major type 2), with the reader's own error: `Cbor.parse_bytes` without the codec protocol's
+## wider error, for the readers inside this module.
+bytes_item : Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64)])
+bytes_item = |cbor, tagged| {
+	b = string_at(untag(cbor, tagged)?, 2)?
+	Ok({ value: b.bytes, rest: b.rest })
+}
+
 bignum : Cbor.Reader, Bool -> Try({ negative : Bool, size : U128, rest : Cbor.Reader }, [InvalidCbor(U64)])
 bignum = |state, lenient| {
 	h = head(state)?
 	if h.major != 6 or (h.arg != 2 and h.arg != 3) {
 		return Err(InvalidCbor(state.pos))
 	}
-	b = Cbor.parse_bytes(plain, at(state, h.next))?
+	b = bytes_item(plain, at(state, h.next))?
 	var $lead = 0.U64
 	for byte in b.value {
 		if byte != 0 {
@@ -5192,7 +5205,7 @@ end_items = |items| {
 
 ## `Cbor.Items.push`: the items that are whole after `chunk`, each read with `parse_shape`, and the next decoder or
 ## the error. The items before an error are in `values`.
-push_items : Cbor.Items, List(U8), (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), (U64 -> [InvalidCbor(U64), ..e]) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), ..e]) }
+push_items : Cbor.Items, List(U8), (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (U64 -> [InvalidCbor(U64), MissingRequiredField(Str), ..e]) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), MissingRequiredField(Str), ..e]) }
 push_items = |items, chunk, parse_shape, too_large| {
 	var $s = append_items(items, chunk)
 	var $values = []
@@ -5222,11 +5235,11 @@ push_items = |items, chunk, parse_shape, too_large| {
 
 ## A reader that reads no value: for `finish`, which needs no type. After `push`, no item of the bytes is whole, so
 ## the end of the input gives `End` or the error of the cut item before a reader runs.
-no_parse : Cbor.Reader -> Try({ value : {}, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])
+no_parse : Cbor.Reader -> Try({ value : {}, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str), ..e])
 no_parse = |state| Err(InvalidCbor(state.pos))
 
 ## `Cbor.Items.finish`: `Ok` when the input can end after the bytes so far, else the error of the cut item.
-finish_items : Cbor.Items -> Try({}, [InvalidCbor(U64), TooLarge(U64)])
+finish_items : Cbor.Items -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)])
 finish_items = |items|
 	match items_next(end_items(items), no_parse, |p| TooLarge(p)) {
 		Ok(End(_)) => Ok({})
@@ -5237,7 +5250,7 @@ finish_items = |items|
 
 ## The next step of `items`: the heads of the root, then one item read with `parse_shape`. `too_large` makes the
 ## error of an item larger than the limit (`TooLarge`; `parse_sequence` has no limit and no such tag).
-items_next : Cbor.Items, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), (U64 -> [InvalidCbor(U64), ..e]) -> Try([Item(a, Cbor.Items), NeedInput(Cbor.Items), End(Cbor.Items)], [InvalidCbor(U64), ..e])
+items_next : Cbor.Items, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (U64 -> [InvalidCbor(U64), MissingRequiredField(Str), ..e]) -> Try([Item(a, Cbor.Items), NeedInput(Cbor.Items), End(Cbor.Items)], [InvalidCbor(U64), MissingRequiredField(Str), ..e])
 items_next = |items, parse_shape, too_large| {
 	var $s = items
 	while $s.phase == Head {
@@ -5399,7 +5412,7 @@ end_entries = |entries| {
 
 ## `Cbor.Entries.push`: the entries that are whole after `chunk`, and the next decoder or the error. The entries
 ## before an error are in `values`.
-push_entries : Cbor.Entries, List(U8), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])) -> { values : List((k, v)), rest : Try(Cbor.Entries, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e]) }
+push_entries : Cbor.Entries, List(U8), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> { values : List((k, v)), rest : Try(Cbor.Entries, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, ..e]) }
 push_entries = |entries, chunk, parse_key, parse_value| {
 	var $s = append_entries(entries, chunk)
 	var $values = []
@@ -5428,7 +5441,7 @@ push_entries = |entries, chunk, parse_key, parse_value| {
 }
 
 ## `Cbor.Entries.finish`: `Ok` when the input can end after the bytes so far, else the error of the cut entry.
-finish_entries : Cbor.Entries -> Try({}, [InvalidCbor(U64), TooLarge(U64), NotStreamable])
+finish_entries : Cbor.Entries -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable])
 finish_entries = |entries|
 	match entries_next(end_entries(entries), no_parse, no_parse) {
 		Ok(End(_)) => Ok({})
@@ -5445,7 +5458,7 @@ moved_items = |items, off, phase, cut, count| {
 }
 
 ## A key reader `parse` with the check of a key of a `Dict` (`exact_key_dups` with `dups`): only the form that the writer writes.
-exact_key_with : Cbor.Reader, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), [Keep, First, Last] -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e]) where [a.Cbor.Encodable([])]
+exact_key_with : Cbor.Reader, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), [Keep, First, Last] -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str), ..e]) where [a.Cbor.Encodable([])]
 exact_key_with = |state, parse, dups| {
 	parsed = parse(state)?
 	match exact_key_dups(state, parsed, dups) {
@@ -5456,7 +5469,7 @@ exact_key_with = |state, parse, dups| {
 
 ## The next step of `entries`: the heads of the root map, then the steps of `entry_step` until an entry, a wait or
 ## the end. With `duplicate_keys: Last` and `key_order: Any`, the error `NotStreamable` before any byte is read.
-entries_next : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])) -> Try([Entry(k, v, Cbor.Entries), NeedInput(Cbor.Entries), End(Cbor.Entries)], [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])
+entries_next : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> Try([Entry(k, v, Cbor.Entries), NeedInput(Cbor.Entries), End(Cbor.Entries)], [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, ..e])
 entries_next = |entries, parse_key, parse_value| {
 	{ items, part, held, held_key, held_skips, keys, prev, first } = entries
 	if items.rules.keys == Last and items.rules.order == Any {
@@ -5496,7 +5509,7 @@ entries_next = |entries, parse_key, parse_value| {
 ## One step of the entries of the root map (after its head): the key of the open entry, its value, the end of the
 ## map, or the bytes after it. `Again`: a step was made, and more can follow. `Give`: an entry. `Wait`: more bytes
 ## are needed. `Done`: the map is complete and the input ended at its end.
-entry_step : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])) -> Try({ entries : Cbor.Entries, out : [Again, Give(k, v), Wait, Done] }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])
+entry_step : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> Try({ entries : Cbor.Entries, out : [Again, Give(k, v), Wait, Done] }, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, ..e])
 entry_step = |entries, parse_key, parse_value| {
 	{ items, part, held, held_key, held_skips, keys, prev, first } = entries
 	buf = items.buf
@@ -5638,7 +5651,7 @@ entry_step = |entries, parse_key, parse_value| {
 
 ## The typed key and value of the entry at `start` in `buf`: the key has `key_len` bytes, and the value ends at `end`.
 ## `skips`: the keys that `duplicate_keys` skips inside them. The error positions are in the stream (`base`).
-read_entry : List(U8), U64, U64, U64, U64, List(U64), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])) -> Try((k, v), [InvalidCbor(U64), ..e])
+read_entry : List(U8), U64, U64, U64, U64, List(U64), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> Try((k, v), [InvalidCbor(U64), MissingRequiredField(Str), ..e])
 read_entry = |buf, base, start, key_len, end, skips, parse_key, parse_value| {
 	at_key = at(reader(buf), start)
 	state = if (skips.is_empty()) at_key else with_memo(at_key, { ..no_memo, skips: skips.sort_with(|a, b| if (a < b) Before else if (a > b) After else Same) })

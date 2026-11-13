@@ -24,7 +24,7 @@ hex = |s|
 	)
 
 ## The errors of each read in this file: a closed union, so that results compare with `==`.
-Errs : [InvalidCbor(U64)]
+Errs : Cbor.Error
 
 ## An empty chunk of output: never given. A test that sees one gives this error.
 empty_piece : Errs

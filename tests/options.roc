@@ -215,7 +215,7 @@ expect {
 Byte := U8.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Byte, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Byte, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		b = Cbor.parse_u8(encoding, state)?
 		Ok({ value: Byte.(b.value), rest: b.rest })
@@ -598,15 +598,15 @@ expect {
 }
 
 ## The text `s` read as a U128 with IntFromText.
-u128_text : Str -> Try(U128, [InvalidCbor(U64)])
+u128_text : Str -> Try(U128, Cbor.Error)
 u128_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [IntFromText] })
 
 ## The text `s` read as an I128 with IntFromText.
-i128_text : Str -> Try(I128, [InvalidCbor(U64)])
+i128_text : Str -> Try(I128, Cbor.Error)
 i128_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [IntFromText] })
 
 ## The text `s` read as a U64 with IntFromText.
-u64_text : Str -> Try(U64, [InvalidCbor(U64)])
+u64_text : Str -> Try(U64, Cbor.Error)
 u64_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [IntFromText] })
 
 ## IntFromText reads each U128: 2^64 and the maximum. The maximum + 1 (39 digits) and 40 digits are errors, with no wrap.
@@ -664,11 +664,11 @@ to_base64 = |bytes| {
 }
 
 ## The text `s` read with BytesFromBase64 as a Cbor.Bytes and as a List(U8). The two must agree.
-from_text : Str -> Try(List(U8), [InvalidCbor(U64)])
+from_text : Str -> Try(List(U8), Cbor.Error)
 from_text = |s| {
-	a : Try(Cbor.Bytes, [InvalidCbor(U64)])
+	a : Try(Cbor.Bytes, Cbor.Error)
 	a = Cbor.parse_with(Cbor.encode(s), b64)
-	l : Try(List(U8), [InvalidCbor(U64)])
+	l : Try(List(U8), Cbor.Error)
 	l = Cbor.parse_with(Cbor.encode(s), b64)
 	if (a.map_ok(|x| x.to_list()) == l) l else Err(InvalidCbor(999))
 }

@@ -15,7 +15,7 @@ with_x : List(U8) -> List(U8)
 with_x = |item| [0xa2, 0x61, 0x61, 0x01, 0x61, 0x78].concat(item)
 
 ## The result of three readers for the same bytes: a record that skips `x`, a `Cbor.Value`, `path_at` of the item.
-Agree : { record : Try(R, [InvalidCbor(U64), MissingRequiredField(Str)]), value : Try(Cbor.Value, [InvalidCbor(U64)]), path : Try(List(Cbor.Step), [NotFound]) }
+Agree : { record : Try(R, Cbor.Error), value : Try(Cbor.Value, Cbor.Error), path : Try(List(Cbor.Step), [NotFound]) }
 
 readers : List(U8) -> Agree
 readers = |item| {
@@ -55,7 +55,7 @@ Chain := [End, Link(Chain)].{
 chain_bytes : U64 -> List(U8)
 chain_bytes = |n| List.repeat([0xa1, 0x64, 'L', 'i', 'n', 'k'], n).join().concat([0x63, 'E', 'n', 'd'])
 
-parse_chain : List(U8) -> Try(Chain, [InvalidCbor(U64), MissingRequiredField(Str)])
+parse_chain : List(U8) -> Try(Chain, Cbor.Error)
 parse_chain = |bytes| Cbor.parse(bytes)
 
 ## A recursive type with an internal tag: `{ "kind": "Node", "value": [child] }` or `{ "kind": "Leaf", "value": n }`.
@@ -63,7 +63,7 @@ Tree := [Leaf(U64), Node(List(Tree))].{
 	parser_for : _
 }
 
-parse_tree : List(U8) -> Try(Tree, [InvalidCbor(U64), MissingRequiredField(Str)])
+parse_tree : List(U8) -> Try(Tree, Cbor.Error)
 parse_tree = |bytes| Cbor.parse_with(bytes, internal)
 
 kind_node : List(U8)
@@ -313,7 +313,7 @@ expect parse_tree(tree_tag_first(256)).map_ok(|_| {}) == Err(InvalidCbor(256 * 1
 ## Two items read as one by a parser of your own. `parse_prefix` walks only the first item, so the second one is
 ## not walked: each check of the text must still be in the reader of `Cbor.Value` and of `Str`.
 TwoItems := (Cbor.Value, Cbor.Value).{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoItems, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoItems, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		first : { value : Cbor.Value, rest : Cbor.Reader }
 		first = Cbor.parse_item(encoding, state)?
@@ -324,7 +324,7 @@ TwoItems := (Cbor.Value, Cbor.Value).{
 }
 
 TwoTexts := (Str, Str).{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoTexts, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoTexts, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		first = Cbor.parse_str(encoding, state)?
 		second = Cbor.parse_str(encoding, first.rest)?
