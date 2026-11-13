@@ -7196,13 +7196,28 @@ fast_walk_inputs = [
 	[0x83, 0xa1, 0x61, 0x6b, 0x01, 0xa2, 0x61, 0x6b, 0x01, 0x61, 0x6b, 0x02, 0x00],
 ]
 
+## The strict rules of a parse: the fast walk agrees with walk_from on each input.
 expect fast_walk_inputs.all(|b| same_as_general(b, strict))
+
+## The rules of read_value (no shortest heads, no key rule): the fast walk agrees with walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, loose))
+
+## The rules of skip (indefinite lengths allowed): the fast walk agrees with walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, any_length))
+
+## duplicate_keys First: the same keys to skip as walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, keys: First }))
+
+## duplicate_keys Last: the same keys to skip as walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, keys: Last }))
+
+## max_items 3: the error at the same item as walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_items: 3 }))
+
+## max_depth 1: the error at the same item as walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_depth: 1 }))
+
+## PaddedNumbers (no shortest heads): the fast walk agrees with walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, shortest_heads: Bool.False }))
 
 ## Each cut of a record list: the error at the same position.
@@ -7228,54 +7243,80 @@ all_bytes = {
 utf8_edges : List(U8)
 utf8_edges = [0x00, 0x7f, 0x80, 0x8f, 0x90, 0x9f, 0xa0, 0xbf, 0xc0, 0xff]
 
+## valid_utf8 agrees with Str.from_utf8 on each 1-byte sequence.
 expect all_bytes.all(|a| same_utf8([a]))
+
+## valid_utf8 agrees with Str.from_utf8 on each 2-byte sequence.
 expect all_bytes.all(|a| all_bytes.all(|b| same_utf8([a, b])))
+
+## valid_utf8 agrees with Str.from_utf8 on 3 bytes: each first and second byte, the third from the edges.
 expect all_bytes.all(|a| all_bytes.all(|b| utf8_edges.all(|c| same_utf8([a, b, c]))))
+
+## valid_utf8 agrees with Str.from_utf8 on 4 bytes: the first bytes f0 to f5, each second byte, the rest from the edges.
 expect [0xf0, 0xf1, 0xf3, 0xf4, 0xf5].all(|a| all_bytes.all(|b| utf8_edges.all(|c| utf8_edges.all(|d| same_utf8([a, b, c, d])))))
+
+## valid_utf8 agrees with Str.from_utf8 on mixed text, a cut code point at the end, and no bytes.
 expect same_utf8("é漢🎉 user-é漢🎉-ü1".to_utf8()) and same_utf8([0x61, 0xe6, 0xbc]) and same_utf8([])
 
 ## The fast paths of `parse_str`, of a record key and of `parse_u64` (`short_text`, `plain_at`): each head width, and
 ## the cases they give to the general reader, with the same value or error position.
+## A text with a 2-byte head (78) reads on the fast path.
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse([0x78, 0x18].concat(List.repeat('a', 24)))
 	r == Ok(Str.repeat("a", 24))
 }
+
+## A cut text with a 2-byte head: the error at its head, from the general reader.
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse([0x78, 0x18, 'a'])
 	r == Err(InvalidCbor(0))
 }
+
+## Invalid UTF-8 in a short text: the error at its head, from the general reader.
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse([0x62, 0xc3, 0x28])
 	r == Err(InvalidCbor(0))
 }
+
+## With ignore_tags, a text after a tag reads (not a plain position).
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse_with([0xc6, 0x61, 0x61], { ignore_tags: [6] })
 	r == Ok("a")
 }
+
+## parse_u64 reads each head width of major type 0 on the fast path.
 expect {
 	r : Try(List(U64), _)
 	r = Cbor.parse([0x84, 0x17, 0x18, 0x18, 0x19, 0x01, 0x00, 0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
 	r == Ok([23, 24, 256, U64.highest])
 }
+
+## A padded integer head with PaddedNumbers reads its value.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with([0x19, 0x00, 0x05], { allow: [PaddedNumbers] })
 	r == Ok(5)
 }
+
+## An unknown record key with a 2-byte head is skipped.
 expect {
 	r : Try({ ab : U64 }, _)
 	r = Cbor.parse([0xa2, 0x62, 0x61, 0x62, 0x01, 0x78, 0x18].concat(List.repeat('x', 24)).append(0x02))
 	r == Ok({ ab: 1 })
 }
+
+## duplicate_keys Last: the record key fast path does not read the skipped first key.
 expect {
 	r : Try({ ab : U64 }, _)
 	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: Last })
 	r == Ok({ ab: 2 })
 }
+
+## duplicate_keys First: the record key fast path does not read the skipped second key.
 expect {
 	r : Try({ ab : U64 }, _)
 	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: First })
