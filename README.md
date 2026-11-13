@@ -29,7 +29,7 @@ Features:
 | Version | 0.6.0 (section "Changes": a migration table from 0.5) |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
-| Compiler | the Zig compiler (nightlies of 2026-11-08 or later: the codec contract with format-owned errors). CI uses the nightly in `.roc-version` (`nightly-2026-11-11-7679cc5`). The tests also pass on `nightly-2026-11-12-ce942d6`. |
+| Compiler | the Zig compiler (nightlies of 2026-11-08 or later: the codec contract with format-owned errors). CI uses the nightly in `.roc-version` (`nightly-2026-11-13-03dce41`). The tests also pass on `nightly-2026-11-11-7679cc5`. |
 | Reader | Strict by default. Each lenient read is a `Cbor.Leniency` in the option `allow`. |
 | Writer | Always well-formed, preferred serialization (shortest heads and floats). Deterministic with `key_order: Sorted`. |
 | Streams | Read and write data larger than memory, one item, entry or chunk at a time (section "Streams") |
@@ -792,7 +792,7 @@ The codec contract of the Roc compiler of 2026-11-08 and later: each format owns
 | Streams | The item readers of `Cbor.Items` and `Cbor.Entries` are `Parseable(Cbor.Error)`. `push`, `finish` and `from_stream` give one closed union each: `Cbor.Error` with `TooLarge` (and `NotStreamable` for `Entries`, `Input(e)` from `from_stream`) |
 | `Readable` | `a.Cbor.Readable`, with no type parameter |
 | Fuzz | The targets use roc-fuzz 0.6.1, with examples |
-| CI nightly | `.roc-version` is `nightly-2026-11-11-7679cc5`. The tests also pass on `nightly-2026-11-12-ce942d6` |
+| CI nightly | `.roc-version` is `nightly-2026-11-13-03dce41`. The tests also pass on `nightly-2026-11-11-7679cc5` |
 
 #### Migration from 0.5
 
