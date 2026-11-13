@@ -210,6 +210,8 @@ expect {
 
 ## Records, and each cut of them.
 expect array_prefixes_agree(rows, {}, row_type)
+
+## The records as a sequence (no array head) give the same items as parse_sequence_with, for each cut.
 expect sequence_prefixes_agree(rows.drop_first(1), {}, row_type)
 
 ## Text with code points of 2, 3 and 4 bytes, cut at each offset.
@@ -240,6 +242,8 @@ expect {
 
 ## An empty array, definite and indefinite: no items, then the end.
 expect array_agrees([0x80], {}, u64s) and array_agrees([0x9f, 0xff], indefinite, u64s)
+
+## The stream of 80 is Ok([]), and of 9f then ff in two chunks with IndefiniteLength is Ok([]).
 expect {
 	a : Try(List(U64), Errs)
 	a = stream(Cbor.Items.array({}), [[0x80]])
@@ -362,6 +366,8 @@ expect {
 
 ## An error at the first extra byte, as in parse_with, also in a later chunk.
 expect array_agrees(hex("820102ff"), {}, u64s) and array_agrees(hex("82010203"), {}, u64s) and array_agrees(hex("9f0102ff00"), indefinite, u64s)
+
+## The chunks 82 01 02, then an empty chunk, then 03: the items 1 and 2, then an error at byte 3.
 expect {
 	r = drive(Cbor.Items.array({}), [[0x82, 0x01, 0x02], [], [0x03]])
 	got : List(U64)
@@ -396,6 +402,8 @@ expect {
 
 ## ignore_tags: the tags before the root are skipped. A tag not in the list is an error at the tag.
 expect array_prefixes_agree(hex("c6d865820102"), { ignore_tags: [6, 101] }, u64s)
+
+## c6 then c7 81 01 in two chunks with ignore_tags [6]: the unlisted tag 7 is an error at byte 1, the same as parse_with.
 expect {
 	a : Try(List(U64), Errs)
 	a = stream(Cbor.Items.array({ ignore_tags: [6] }), [[0xc6], [0xc7, 0x81, 0x01]])
@@ -536,6 +544,7 @@ expect {
 ## Internal tag unions inside items, and Cbor.Raw items with the bytes of each item.
 Pay : [Cash, Card({ last4 : Str }), Check(U64)]
 
+## Three internal tag unions (kind and value keys) in 1-byte chunks read as Cash, Card({ last4: "42" }) and Check(7).
 expect {
 	kind : Cbor.Options
 	kind = { unions: Internal({ tag: "kind", content: "value" }) }
@@ -547,6 +556,7 @@ expect {
 	a == Ok([Cash, Card({ last4: "42" }), Check(7)]) and array_agrees(bytes, kind, pays)
 }
 
+## Cbor.Raw items in 2-byte chunks give the bytes of each item: 01, 81 02 and a1 61 61 61 62.
 expect {
 	bytes = hex("83018102a161616162")
 	a : Try(List(Cbor.Raw), Errs)

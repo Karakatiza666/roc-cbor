@@ -53,11 +53,20 @@ ones = |w, n, value| {
 
 ## The keys of each type write as that type: text, an integer, a negative integer, a Bool, a bignum. The order of the Dict.
 expect Cbor.encode(Dict.from_list([("a", 1.U64), ("b", 2)])) == hex("a2616101616202")
+
+## Integer keys: {1: "a", 24: "b"} writes a2 01 6161 1818 6162.
 expect Cbor.encode(Dict.from_list([(1.U64, "a"), (24, "b")])) == hex("a201616118186162")
 
+## Negative integer keys: {-1: true, -25: false} writes a2 20 f5 3818 f4.
 expect Cbor.encode(Dict.from_list([(-1.I64, Bool.True), (-25, Bool.False)])) == hex("a220f53818f4")
+
+## Bool keys: {false: 0, true: 1} writes a2 f4 00 f5 01.
 expect Cbor.encode(Dict.from_list([(Bool.False, 0.U8), (Bool.True, 1)])) == hex("a2f400f501")
+
+## A U128 key of 2^64 writes as the bignum c2 49 01 00 00 00 00 00 00 00 00.
 expect Cbor.encode(Dict.from_list([(18446744073709551616.U128, 0.U8)])) == hex("a1c24901000000000000000000")
+
+## A List(U8) value writes as a byte string: {1: [1, 2]} writes a1 01 42 01 02.
 expect Cbor.encode(Dict.empty() |> Dict.insert(1.U8, [1.U8, 2])) == hex("a101420102")
 
 ## An empty Dict is an empty map.
@@ -81,11 +90,23 @@ expect Cbor.encode({ m: Dict.from_list([(1.U64, Dict.from_list([("x", 2.U64)]))]
 
 ## Each entry is exactly one key and one value, and the count of entries is the declared count.
 expect Cbor.encode_try(Entries.({ declared: 2, written: 2, key_items: 1, value_items: 1 })) == Ok(hex("a200070107"))
+
+## A key that writes no item is a CountMismatch.
 expect Cbor.encode_try(Entries.({ declared: 1, written: 1, key_items: 0, value_items: 1 })) == Err(CountMismatch)
+
+## A key that writes two items is a CountMismatch.
 expect Cbor.encode_try(Entries.({ declared: 1, written: 1, key_items: 2, value_items: 1 })) == Err(CountMismatch)
+
+## A value that writes no item is a CountMismatch.
 expect Cbor.encode_try(Entries.({ declared: 1, written: 1, key_items: 1, value_items: 0 })) == Err(CountMismatch)
+
+## A value that writes two items is a CountMismatch.
 expect Cbor.encode_try(Entries.({ declared: 1, written: 1, key_items: 1, value_items: 2 })) == Err(CountMismatch)
+
+## One entry written for a declared count of 2 is a CountMismatch.
 expect Cbor.encode_try(Entries.({ declared: 2, written: 1, key_items: 1, value_items: 1 })) == Err(CountMismatch)
+
+## Two entries written for a declared count of 1 is a CountMismatch.
 expect Cbor.encode_try(Entries.({ declared: 1, written: 2, key_items: 1, value_items: 1 })) == Err(CountMismatch)
 
 # Dict keys that are not text, on read
@@ -98,6 +119,7 @@ expect {
 	r == Ok(d)
 }
 
+## A Dict(I32, U8) with the negative keys -1 and -1000 reads back.
 expect {
 	d = Dict.from_list([(-1.I32, 1.U8), (7, 2), (-1000, 3)])
 	r : Try(Dict(I32, U8), _)
@@ -105,6 +127,7 @@ expect {
 	r == Ok(d)
 }
 
+## A Dict(Bool, Str) with the keys true and false reads back.
 expect {
 	d = Dict.from_list([(Bool.True, "t"), (Bool.False, "f")])
 	r : Try(Dict(Bool, Str), _)
@@ -112,6 +135,7 @@ expect {
 	r == Ok(d)
 }
 
+## A Dict(U128, U8) with the key U128.highest (a bignum) reads back.
 expect {
 	d = Dict.from_list([(340282366920938463463374607431768211455.U128, 1.U8), (5, 2)])
 	r : Try(Dict(U128, U8), _)
@@ -119,6 +143,7 @@ expect {
 	r == Ok(d)
 }
 
+## A Dict(I128, U8) with the key I128.lowest (a negative bignum) reads back.
 expect {
 	d = Dict.from_list([(-170141183460469231731687303715884105728.I128, 1.U8), (-5, 2)])
 	r : Try(Dict(I128, U8), _)
@@ -126,6 +151,7 @@ expect {
 	r == Ok(d)
 }
 
+## A Dict(Dec, Str) with the keys 1.5, 2 and -0.25 reads back.
 expect {
 	d = Dict.from_list([(1.5.Dec, "a"), (2, "b"), (-0.25, "c")])
 	r : Try(Dict(Dec, Str), _)
@@ -142,6 +168,7 @@ expect {
 	r == Err(InvalidCbor(14))
 }
 
+## A Dict(U8, Dict(I8, Str)), a Dict in a Dict, reads back.
 expect {
 	d = Dict.from_list([(7.U8, Dict.from_list([(-1.I8, "x")]))])
 	r : Try(Dict(U8, Dict(I8, Str)), _)
@@ -212,24 +239,28 @@ expect {
 	r == Err(InvalidCbor(4))
 }
 
+## With BoolFromInt, the Bool keys false (f4) and 0 in one map are an error at the second key, byte 4.
 expect {
 	r : Try(Dict(Bool, Str), _)
 	r = Cbor.parse_with(hex("a2f46161006162"), { allow: [BoolFromInt] })
 	r == Err(InvalidCbor(4))
 }
 
+## With FloatToInt, the U64 keys 1 and 1.0 (f9 3c 00) in one map are an error at the second key, byte 4.
 expect {
 	r : Try(Dict(U64, Str), _)
 	r = Cbor.parse_with(hex("a2016161f93c006162"), { allow: [FloatToInt] })
 	r == Err(InvalidCbor(4))
 }
 
+## With IntFromText, the U64 keys 1 and "1" (61 31) in one map are an error at the second key, byte 4.
 expect {
 	r : Try(Dict(U64, Str), _)
 	r = Cbor.parse_with(hex("a201616161316162"), { allow: [IntFromText] })
 	r == Err(InvalidCbor(4))
 }
 
+## With PaddedNumbers, the U128 keys 2^64 and 2^64 as a bignum with a leading zero byte are an error at the second key, byte 14.
 expect {
 	r : Try(Dict(U128, Str), _)
 	r = Cbor.parse_with(hex("a2c2490100000000000000006161c24a000100000000000000006162"), { allow: [PaddedNumbers] })
@@ -254,13 +285,29 @@ expect {
 
 ## A value in the range of major types 0 and 1 is an integer, a larger one a bignum with no leading zero byte (RFC 8949 3.4.3).
 expect Cbor.encode(18446744073709551615.U128) == hex("1bffffffffffffffff")
+
+## The U128 2^64 writes as the bignum c2 49 01 00 00 00 00 00 00 00 00.
 expect Cbor.encode(18446744073709551616.U128) == hex("c249010000000000000000")
+
+## U128.highest writes as a bignum of 16 bytes ff.
 expect Cbor.encode(U128.highest) == hex("c250ffffffffffffffffffffffffffffffff")
+
+## The U128 0 writes 00.
 expect Cbor.encode(0.U128) == [0x00]
+
+## The I128 -2^64 writes as the integer 3b ffffffffffffffff.
 expect Cbor.encode(-18446744073709551616.I128) == hex("3bffffffffffffffff")
+
+## The I128 -2^64 - 1 writes as the negative bignum c3 49 01 00 00 00 00 00 00 00 00.
 expect Cbor.encode(-18446744073709551617.I128) == hex("c349010000000000000000")
+
+## I128.lowest writes as the negative bignum c3 50 7f ff .. ff.
 expect Cbor.encode(I128.lowest) == hex("c3507fffffffffffffffffffffffffffffff")
+
+## I128.highest writes as the bignum c2 50 7f ff .. ff.
 expect Cbor.encode(I128.highest) == hex("c2507fffffffffffffffffffffffffffffff")
+
+## The I128 -1 writes 20.
 expect Cbor.encode(-1.I128) == [0x20]
 
 ## Each value reads back.
@@ -271,6 +318,7 @@ expect {
 	r == Ok(xs)
 }
 
+## A List(I128) of 0, -1, -2^64, -2^64 - 1, 2^64, I128.lowest and I128.highest reads back.
 expect {
 	xs = [0.I128, -1, -18446744073709551616, -18446744073709551617, 18446744073709551616, I128.lowest, I128.highest]
 	r : Try(List(I128), _)
@@ -285,24 +333,28 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A negative bignum (c3 49 01 00 ..) is an error at byte 0 for a U128.
 expect {
 	r : Try(U128, _)
 	r = Cbor.parse(hex("c349010000000000000000"))
 	r == Err(InvalidCbor(0))
 }
 
+## The bignum 2^127 (c2 50 80 00 ..) is above I128.highest: an error at byte 0.
 expect {
 	r : Try(I128, _)
 	r = Cbor.parse(hex("c25080000000000000000000000000000000"))
 	r == Err(InvalidCbor(0))
 }
 
+## The negative bignum c3 50 80 00 .. (-2^127 - 1) is below I128.lowest: an error at byte 0.
 expect {
 	r : Try(I128, _)
 	r = Cbor.parse(hex("c35080000000000000000000000000000000"))
 	r == Err(InvalidCbor(0))
 }
 
+## A bignum of 17 bytes (c2 51 01 00 ..) is an error at byte 0 for a U128.
 expect {
 	r : Try(U128, _)
 	r = Cbor.parse(hex("c2510100000000000000000000000000000000"))
@@ -320,6 +372,7 @@ expect {
 	a == Err(InvalidCbor(0)) and b == Ok(18446744073709551616)
 }
 
+## The negative bignum c3 41 01 (-2, in the range of major type 1) is an error at byte 0, and -2 with PaddedNumbers.
 expect {
 	bytes = hex("c34101")
 	a : Try(I128, _)

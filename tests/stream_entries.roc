@@ -309,6 +309,8 @@ expect {
 ## An indefinite map with IndefiniteLength, each cut; without it, an error at the root head; a break in a
 ## definite map, or a break after a key, is an error.
 expect prefixes_agree(hex("bf616101616202ff"), indefinite, str_u64)
+
+## The indefinite map bf 61 61 01 61 62 02 ff with IndefiniteLength agrees with parse_with for the whole input and each cut.
 expect {
 	a : Try(List((Str, U64)), Errs)
 	a = stream(Cbor.Entries.map({}), [hex("bf616101ff")])
@@ -334,6 +336,8 @@ expect {
 
 ## ignore_tags: the tags before the root are skipped (each cut). A tag not in the list is an error at the tag.
 expect prefixes_agree(hex("c6d865a1616101"), { ignore_tags: [6, 101] }, str_u64)
+
+## c6 c7 a0 in two chunks with ignore_tags [6]: the unlisted tag 7 is an error at byte 1, the same as parse_with.
 expect {
 	a : Try(List((Str, U64)), Errs)
 	a = stream(Cbor.Entries.map({ ignore_tags: [6] }), [[0xc6], [0xc7, 0xa0]])

@@ -54,6 +54,7 @@ via_parseable : List(U8) -> Try(a, Cbor.Error) where [a.Cbor.Readable]
 via_parseable = |bytes| parseable_inner(bytes)
 
 # Readable works for a record (MissingRequiredField and InvalidCbor)
+## read_text on a Row: a full record reads, no name is "missing name", the integer 01 is "invalid at 0".
 expect {
 	ok : Try(Row, Str)
 	ok = read_text(Cbor.encode({ id: 7.U64, name: "a" }))
@@ -65,6 +66,7 @@ expect {
 }
 
 # Readable works for List(Row), List(I64), List(U8) and a closed custom parser
+## read_text on List(Row), List(I64), List(U8) and Id: each reads, a row with no name is "missing name", text for an Id is "invalid at 0".
 expect {
 	rows : Try(List(Row), Str)
 	rows = read_text(Cbor.encode([{ id: 1.U64, name: "a" }]))
@@ -82,6 +84,7 @@ expect {
 }
 
 # Writable works for a record, a list, a List(U8) and a custom type
+## write_all writes a record, [1, 2] as an array (82 01 02), a List(U8) as bytes (42 01 02) and Id 5 as 05.
 expect {
 	rows = write_all([{ id: 1.U64, name: "a" }])
 	nums = write_all([[1.I64, 2]])
@@ -91,9 +94,11 @@ expect {
 }
 
 # Writable and Readable in one function
+## round_trips is true for a record, a List(I64), a List(U8) and an Id.
 expect round_trips({ id: 7.U64, name: "a" }) and round_trips([1.I64, -2]) and round_trips([9.U8]) and round_trips(Id.(3))
 
 # a function with Readable calls a function with Parseable
+## via_parseable reads a full Row, and a Row with no name is Err(MissingRequiredField("name")).
 expect {
 	ok : Try(Row, _)
 	ok = via_parseable(Cbor.encode({ id: 7.U64, name: "a" }))

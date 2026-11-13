@@ -26,12 +26,14 @@ indefinite = { allow: [IndefiniteLength] }
 
 # Strict: an error at the head, also in a skipped item
 
+## Strict, an array of indefinite length (9f 01 02 ff) as a List(U64) is an error at byte 0.
 expect {
 	r : Try(List(U64), _)
 	r = Cbor.parse(hex("9f0102ff"))
 	r == Err(InvalidCbor(0))
 }
 
+## Strict, an unknown record field with an empty array of indefinite length (9f ff) is an error at byte 6.
 expect {
 	r : Try({ a : U64 }, _)
 	r = Cbor.parse(hex("a261610161789fff"))
@@ -40,6 +42,7 @@ expect {
 
 # Arrays
 
+## With IndefiniteLength, 9f 01 02 ff reads as the List(U64) [1, 2].
 expect {
 	r : Try(List(U64), _)
 	r = Cbor.parse_with(hex("9f0102ff"), indefinite)
@@ -60,12 +63,14 @@ expect {
 	r == Ok((1, "a"))
 }
 
+## A tuple (U64, Str) with a third item before the break (9f 01 61 61 02 ff) is an error at byte 4.
 expect {
 	r : Try((U64, Str), _)
 	r = Cbor.parse_with(hex("9f01616102ff"), indefinite)
 	r == Err(InvalidCbor(4))
 }
 
+## A list of an indefinite and a definite tuple (9f 9f 01 02 ff 82 03 04 ff) reads as [(1, 2), (3, 4)].
 expect {
 	r : Try(List((U64, U64)), _)
 	r = Cbor.parse_with(hex("9f9f0102ff820304ff"), indefinite)
@@ -86,24 +91,28 @@ expect {
 
 # Byte strings and text: the chunks are joined
 
+## A byte string with the chunks 01 02, empty and 03 (5f 42 01 02 40 41 03 ff) reads as the List(U8) [1, 2, 3].
 expect {
 	r : Try(List(U8), _)
 	r = Cbor.parse_with(hex("5f420102404103ff"), indefinite)
 	r == Ok([1, 2, 3])
 }
 
+## Byte strings in a list: empty and 01 of indefinite length, and a definite 02, read as [[], [1], [2]].
 expect {
 	r : Try(List(List(U8)), _)
 	r = Cbor.parse_with(hex("9f5fff5f4101ff4102ff"), indefinite)
 	r == Ok([[], [1], [2]])
 }
 
+## A byte string of indefinite length (5f 42 01 02 41 03 ff) reads as the Cbor.Bytes 01 02 03.
 expect {
 	r : Try(Cbor.Bytes, _)
 	r = Cbor.parse_with(hex("5f4201024103ff"), indefinite)
 	r.map_ok(|b| b.to_list()) == Ok([1, 2, 3])
 }
 
+## Text with the chunks "ab", "c" and "" (7f 62 61 62 61 63 60 ff) reads as "abc".
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse_with(hex("7f626162616360ff"), indefinite)
@@ -117,12 +126,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## Text with a chunk of indefinite length in it (7f 7f ff ff) is an error at byte 0.
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse_with(hex("7f7fffff"), indefinite)
 	r == Err(InvalidCbor(0))
 }
 
+## Text with the code point c3 bc split in two chunks (7f 61 c3 61 bc ff) is an error at byte 0.
 expect {
 	r : Try(Str, _)
 	r = Cbor.parse_with(hex("7f61c361bcff"), indefinite)
@@ -148,12 +159,14 @@ expect {
 ## The walk checks it, also where no typed reader goes (`path_at`).
 expect Cbor.path_at(hex("bf6161016162ff"), 0) == Err(NotFound)
 
+## A break at the root (ff) is an error at byte 0.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with(hex("ff"), indefinite)
 	r == Err(InvalidCbor(0))
 }
 
+## A break in an array of definite length (82 01 ff) is an error at byte 2.
 expect {
 	r : Try(List(U64), _)
 	r = Cbor.parse_with(hex("8201ff"), indefinite)
@@ -195,12 +208,14 @@ expect {
 
 # Tag unions
 
+## A tag union in a map of indefinite length, with a payload array of indefinite length, reads as Wire("eu", 9).
 expect {
 	r : Try([Wire(Str, U64), Cash], _)
 	r = Cbor.parse_with(hex("bf64576972659f62657509ffff"), indefinite)
 	r == Ok(Wire("eu", 9))
 }
 
+## A tag union in a map of indefinite length (bf 65 "Check" 07 ff) reads as Check(7).
 expect {
 	r : Try([Check(U64)], _)
 	r = Cbor.parse_with(hex("bf65436865636b07ff"), indefinite)
@@ -242,6 +257,7 @@ expect {
 	r.map_ok(|v| Cbor.encode(v)) == Ok(hex("a261618301420102626263a080"))
 }
 
+## Strict, an empty array of indefinite length (9f ff) as a Cbor.Value is an error at byte 0.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse(hex("9fff"))
