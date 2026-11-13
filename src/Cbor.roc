@@ -3775,6 +3775,10 @@ read_value = |state| {
 				# The first key of a map can be a key to skip (`Last`). One instance of each key stays.
 				skipped_to = if (f.kind == MapFrame) skip_keys(at(state, $pos), f.left)? else { pos: $pos, left: f.left }
 				$pos = skipped_to.pos
+				# Room for the items of a definite length at once (an indefinite length has more items than bytes).
+				if skipped_to.left <= state.bytes.len() {
+					$values = $values.reserve(skipped_to.left)
+				}
 				$frames = $frames.append({ kind: f.kind, left: skipped_to.left, start: $values.len() })
 			}
 			Item(first) => {
