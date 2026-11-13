@@ -4097,22 +4097,57 @@ item_with = |bytes, p, rules, utf8| {
 	}
 }
 
-## The `len` bytes at `start` are valid UTF-8. Short ASCII text (most keys) needs no call of `Str.from_utf8`:
-## an ASCII byte is valid UTF-8. At the first other byte, `Str.from_utf8` checks all the bytes.
+## The `len` bytes at `start` are valid UTF-8 (RFC 3629): one pass, with the width of each code point from its first
+## byte and the range of its second byte (no overlong form, no surrogate, nothing above U+10FFFF), as `Str.from_utf8`.
+## TODO(roc#13025): `Str.from_utf8` out of line decodes each code point and checks the last bytes again (4.6x Rust on
+## short text). When the issue is fixed, go back to `Str.from_utf8(bytes.sublist({ start, len })).is_ok()`, and
+## remove `utf8_tail`. The test "valid_utf8 agrees with Str.from_utf8" stays.
 valid_utf8 : List(U8), U64, U64 -> Bool
 valid_utf8 = |bytes, start, len| {
-	if len <= 32 {
-		var $i = start
-		while $i < start + len {
-			if (bytes.get($i) ?? 0x80) >= 0x80 {
-				return Str.from_utf8(bytes.sublist({ start, len })).is_ok()
-			}
+	end = start + len
+	var $i = start
+	while $i < end {
+		b = bytes.get($i) ?? 0xff
+		if b < 0x80 {
 			$i = $i + 1
+		} else {
+			width =
+				if b >= 0xc2 and b <= 0xdf {
+					2
+				} else if b >= 0xe0 and b <= 0xef {
+					3
+				} else if b >= 0xf0 and b <= 0xf4 {
+					4
+				} else {
+					return Bool.False
+				}
+			if width > end - $i or !utf8_tail(bytes, $i, b, width) {
+				return Bool.False
+			}
+			$i = $i + width
 		}
-		Bool.True
-	} else {
-		Str.from_utf8(bytes.sublist({ start, len })).is_ok()
 	}
+	Bool.True
+}
+
+## The bytes after the first byte `b` of a code point of `width` bytes at `i`: the second byte in the range that `b`
+## allows, each other byte a continuation byte (`80` to `bf`).
+utf8_tail : List(U8), U64, U8, U64 -> Bool
+utf8_tail = |bytes, i, b, width| {
+	second = bytes.get(i + 1) ?? 0
+	(lo, hi) =
+		match b {
+			0xe0 => (0xa0, 0xbf)
+			0xed => (0x80, 0x9f)
+			0xf0 => (0x90, 0xbf)
+			0xf4 => (0x80, 0x8f)
+			_ => (0x80, 0xbf)
+		}
+	cont = |k| {
+		c = bytes.get(i + k) ?? 0
+		c >= 0x80 and c <= 0xbf
+	}
+	second >= lo and second <= hi and (width < 3 or cont(2)) and (width < 4 or cont(3))
 }
 
 get_be : List(U8), U64, U64 -> U64
@@ -7126,6 +7161,27 @@ expect {
 	cuts = (0.U64).until(bytes.len() + 1).collect()
 	cuts.all(|n| same_as_general(bytes.take_first(n), strict))
 }
+
+## valid_utf8 agrees with Str.from_utf8: each sequence of 1 and 2 bytes, and for 3 and 4 bytes each first and second
+## byte with the third and fourth bytes from a set of edges.
+same_utf8 : List(U8) -> Bool
+same_utf8 = |b| valid_utf8(b, 0, b.len()) == Str.from_utf8(b).is_ok()
+
+all_bytes : List(U8)
+all_bytes = {
+	ns : List(U64)
+	ns = (0.U64).until(256).collect()
+	ns.map(|n| n.to_u8_wrap())
+}
+
+utf8_edges : List(U8)
+utf8_edges = [0x00, 0x7f, 0x80, 0x8f, 0x90, 0x9f, 0xa0, 0xbf, 0xc0, 0xff]
+
+expect all_bytes.all(|a| same_utf8([a]))
+expect all_bytes.all(|a| all_bytes.all(|b| same_utf8([a, b])))
+expect all_bytes.all(|a| all_bytes.all(|b| utf8_edges.all(|c| same_utf8([a, b, c]))))
+expect [0xf0, 0xf1, 0xf3, 0xf4, 0xf5].all(|a| all_bytes.all(|b| utf8_edges.all(|c| utf8_edges.all(|d| same_utf8([a, b, c, d])))))
+expect same_utf8("é漢🎉 user-é漢🎉-ü1".to_utf8()) and same_utf8([0x61, 0xe6, 0xbc]) and same_utf8([])
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
 ## parts (a walk of the first part, then a walk of the whole prefix from its `Cut` state) give the same result,
