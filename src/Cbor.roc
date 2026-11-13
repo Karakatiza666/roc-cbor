@@ -1375,6 +1375,13 @@ Cbor :: {
 	## Another integer is an error.
 	parse_bool : Cbor, Cbor.Reader -> Try({ value : Bool, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_bool = |cbor, tagged| {
+		if plain_at(cbor, tagged) {
+			match tagged.bytes.get(tagged.pos) {
+				Ok(0xf4) => return Ok({ value: Bool.False, rest: at(tagged, tagged.pos + 1) })
+				Ok(0xf5) => return Ok({ value: Bool.True, rest: at(tagged, tagged.pos + 1) })
+				_ => {}
+			}
+		}
 		state = untag(cbor, tagged)?
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
 			Ok(0xf4) => Ok({ value: Bool.False, rest: at(state, state.pos + 1) })
@@ -1503,6 +1510,18 @@ Cbor :: {
 	## Reads a float, or an integer that is exact as an F64 (any integer of size 2^53 or less).
 	parse_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f64 = |cbor, state| {
+		if plain_at(cbor, state) {
+			# A float head at a plain position: its bits after the initial byte (the walk checked the bytes).
+			b = state.bytes.get(state.pos) ?? 0
+			if b >= 0xf9 and b <= 0xfb {
+				size = (1.U64).shl_wrap((b - 0xf8).to_u8_wrap())
+				if size < state.bytes.len() - state.pos {
+					bits = get_be(state.bytes, state.pos + 1, size)
+					value = if (b == 0xfb) F64.from_bits(bits) else if (b == 0xfa) F32.from_bits(bits.to_u32_wrap()).to_f64() else half(bits)
+					return Ok({ value, rest: at(state, state.pos + 1 + size) })
+				}
+			}
+		}
 		f = float(untag(cbor, state)?)?
 		Ok({ value: f.value, rest: f.rest })
 	}
@@ -1566,6 +1585,16 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_list_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_list_start = |cbor, tagged| {
+		if plain_at(cbor, tagged) {
+			# An array of 23 items or less at a plain position: a 1-byte head.
+			b = tagged.bytes.get(tagged.pos) ?? 0
+			if b >= 0x80 and b <= 0x97 {
+				len = (b - 0x80).to_u64()
+				if len <= tagged.bytes.len() - tagged.pos - 1 {
+					return Ok(Counted({ len, rest: { ..at(tagged, tagged.pos + 1), array: tagged.pos } }))
+				}
+			}
+		}
 		state = untag(cbor, tagged)?
 		h = head(state)?
 		if indefinite_at(h, state.pos) {
@@ -1649,7 +1678,19 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## A record that is the one payload of an internal tag reads the map of the tag itself.
 	parse_record_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
-	parse_record_start = |cbor, tagged| map_start(skip_tags(cbor, tagged))
+	parse_record_start = |cbor, tagged| {
+		if tagged.raw == 0 and cbor.ignore_tags.is_empty() {
+			# A map of 23 entries or less: a 1-byte head. Each entry is 2 bytes or more.
+			b = tagged.bytes.get(tagged.pos) ?? 0
+			if b >= 0xa0 and b <= 0xb7 {
+				len = (b - 0xa0).to_u64()
+				if len <= (tagged.bytes.len() - tagged.pos - 1) // 2 {
+					return Ok(Counted({ len, rest: at(tagged, tagged.pos + 1) }))
+				}
+			}
+		}
+		map_start(skip_tags(cbor, tagged))
+	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## With `Snake` and `unknown_fields: Skip`, gives the key, and the derived parser matches it (the fast path).
@@ -4376,10 +4417,38 @@ skip = |state| {
 	if state.raw == 0 {
 		match item_at(state.bytes, state.pos, any_length) {
 			Ok(it) if it.items == 0 => return Ok(at(state, it.next))
+			Ok(it) if it.major == 4 or it.major == 5 => {
+				# A flat array or map of definite length (each item with no items in it): a count, no walk state.
+				match skip_flat(state.bytes, it.next, it.items) {
+					Ok(end) => return Ok(at(state, end))
+					Err(Nested) => {}
+				}
+			}
 			_ => {}
 		}
 	}
 	walk(state, any_length, Bool.False)
+}
+
+## The end of `items` whole items from `p`, each with no items in it (`item_at`). `Nested` at an item with items in it,
+## at an error, and for a count larger than the bytes (an indefinite length has `until_break` items): `walk` reads
+## those, with the same end or the same error position.
+skip_flat : List(U8), U64, U64 -> Try(U64, [Nested])
+skip_flat = |bytes, p, items| {
+	if items > bytes.len() - p {
+		return Err(Nested)
+	}
+	var $q = p
+	var $k = 0.U64
+	while $k < items {
+		it = item_at(bytes, $q, any_length) ? |_| Nested
+		if it.items != 0 {
+			return Err(Nested)
+		}
+		$q = it.next
+		$k = $k + 1
+	}
+	Ok($q)
 }
 
 ## Walks one whole item with the checks of `item_at` and `rules`, and gives the reader after it (`walk_from` on all
@@ -7359,6 +7428,48 @@ expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse_with([0x7f, 0x61, 0x61, 0x61, 0x62, 0xff], { allow: [IndefiniteLength] })
 	r == Ok(Cbor.Value.Text("ab"))
+}
+
+## parse_f64 reads each float width on its fast path: f16 1.5, f32 1.5 and f64 1.5.
+expect {
+	r : Try(List(F64), _)
+	r = Cbor.parse([0x83, 0xf9, 0x3e, 0x00, 0xfa, 0x3f, 0xc0, 0x00, 0x00, 0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
+	r == Ok([1.5, 1.5, 1.5])
+}
+
+## parse_f64 still reads an integer (the general path).
+expect {
+	r : Try(F64, _)
+	r = Cbor.parse([0x18, 0x64])
+	r == Ok(100.0)
+}
+
+## With ignore_tags, a record after a tag reads (parse_record_start takes the general path).
+expect {
+	r : Try({ a : U64 }, _)
+	r = Cbor.parse_with([0xc6, 0xa1, 0x61, 0x61, 0x01], { ignore_tags: [6] })
+	r == Ok({ a: 1 })
+}
+
+## A cut array of records is an error at the same position as before the fast path (the walk finds it first).
+expect {
+	r : Try(List({ a : U64 }), _)
+	r = Cbor.parse([0x82, 0xa1, 0x61, 0x61, 0x01])
+	r == Err(InvalidCbor(0))
+}
+
+## A record field that is a list of bools reads on the fast paths of parse_list_start and parse_bool.
+expect {
+	r : Try({ b : List(Bool) }, _)
+	r = Cbor.parse([0xa1, 0x61, 0x62, 0x82, 0xf5, 0xf4])
+	r == Ok({ b: [Bool.True, Bool.False] })
+}
+
+## skip of an unknown field that is a flat map, a flat array, and a nested array (the walk).
+expect {
+	r : Try({ a : U64 }, _)
+	r = Cbor.parse([0xa4, 0x61, 0x6d, 0xa1, 0x01, 0x02, 0x61, 0x6c, 0x82, 0x01, 0x02, 0x61, 0x6e, 0x81, 0x81, 0x01, 0x61, 0x61, 0x05])
+	r == Ok({ a: 5 })
 }
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
