@@ -164,8 +164,10 @@ Cbor :: {
 	Writer :: {
 		out : List(U8),
 		st : {
-			# The places for items still open at the current level.
+			# The places of the current level that no `add_*` call has opened yet.
 			left : U64,
+			# The open place has no item yet: the next item takes it (`begin`). A place is opened by `slot`.
+			owe : Bool,
 			# The current list: its head is still to write (Pending), or it is a byte string (Bytes).
 			list : [Plain, Pending(U64), Bytes({ start : U64, count : U64 })],
 			# The id of the current level, and the next free id. A callback must give back a writer of its own level.
@@ -1333,7 +1335,7 @@ Cbor :: {
 	encode_tagged : U64, a, Cbor.Writer -> Try(Cbor.Writer, err) where [a.Encodable(err)]
 	encode_tagged = |number, value, w| {
 		{ out, st } = begin(w)
-		slot({ out: put_head(out, 6, number), st }, 0, |inner| Cbor.encode_item(value, inner))
+		tag_slot({ out: put_head(out, 6, number), st }, |inner| Cbor.encode_item(value, inner))
 	}
 
 	## Reads one item of the type `a` at `state`, with the `parser_for` of `a`, and gives the state after it.
@@ -1995,11 +1997,11 @@ Cbor :: {
 	encode_u8 = |value, w| {
 		{ out, st } = w
 		match st.list {
-			Pending(count) if st.left > 0 => {
+			Pending(count) if st.owe => {
 				start = out.len()
-				Ok({ out: put_head(out, 2, count).append(value), st: { ..st, left: st.left - 1, list: Bytes({ start, count }) } })
+				Ok({ out: put_head(out, 2, count).append(value), st: { ..st, owe: Bool.False, list: Bytes({ start, count }) } })
 			}
-			Bytes(_) if st.left > 0 => Ok({ out: out.append(value), st: { ..st, left: st.left - 1 } })
+			Bytes(_) if st.owe => Ok({ out: out.append(value), st: { ..st, owe: Bool.False } })
 			_ => {
 				{ out: o, st: s } = begin({ out, st })
 				Ok({ out: put_head(o, 0, value.to_u64()), st: s })
@@ -2214,21 +2216,20 @@ Cbor :: {
 		}
 }
 
-## Starts one item: it takes one place of the current level, and writes a pending list head.
-## No place left is a count mismatch.
+## Starts one item: it takes the open place (`owe`), and writes a pending list head.
+## No open place is a count mismatch: a second item in one place, or an item outside of a place.
 ## Each writer function takes the output out of the writer before it appends, and uses no
 ## closure for an append. Then the output has one reference at each append, and is not copied.
 begin : Cbor.Writer -> Cbor.Writer
 begin = |w| {
 	{ out, st } = w
-	if st.left == 0 {
+	if !st.owe {
 		return { out, st: { ..st, bad: Bool.True } }
 	}
-	left = st.left - 1
 	match st.list {
-		Plain => { out, st: { ..st, left } }
-		Pending(count) => { out: put_head(out, 4, count), st: { ..st, left, list: Plain } }
-		Bytes({ start, count }) => { out: rewrite_as_array(out, start, count), st: { ..st, left, list: Plain } }
+		Plain => { out, st: { ..st, owe: Bool.False } }
+		Pending(count) => { out: put_head(out, 4, count), st: { ..st, owe: Bool.False, list: Plain } }
+		Bytes({ start, count }) => { out: rewrite_as_array(out, start, count), st: { ..st, owe: Bool.False, list: Plain } }
 	}
 }
 
@@ -2269,13 +2270,14 @@ nest = |w, heads, list, need, write| {
 	id = st.next
 	left = st.left
 	level = st.level
-	Cbor.Container.(inner) = write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, list, level: id, next: id + 1 } }))?
+	Cbor.Container.(inner) = write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }))?
 	{ out: o, st: d } = inner
 	# A list with no item: its head is still to write.
 	pending = d.list == Pending(count)
 	done = if (pending) put_head(o, 4, count) else o
-	ok = d.level == id and (need == Partial or d.left == 0)
-	Ok({ w: { out: done, st: { ..d, left, level, list: Plain, bad: d.bad or !ok } }, start, unused: d.left })
+	# The writer of this level, the last place with its item, and with `Full` each place opened.
+	ok = d.level == id and !d.owe and (need == Partial or d.left == 0)
+	Ok({ w: { out: done, st: { ..d, left, level, owe: Bool.False, list: Plain, bad: d.bad or !ok } }, start, unused: d.left })
 }
 
 ## One value of a list, a tuple or a tag: exactly one item.
@@ -2296,34 +2298,38 @@ add_field = |Cbor.Container.(w), name, write_value| {
 	Ok(Cbor.Container.(slot({ out: put_text(out, name), st }, 1, write_value)?))
 }
 
-## Runs `write_value` on a new level with one place and a new id. It must give back a writer of that
-## level, with exactly one item. The place comes from the current level (`used` 1), or `begin` took it (`used` 0).
+## Opens one place of the current level for `write_value`, which must write exactly one item there. The place comes
+## from the current level (`used` 1), or the key of a map entry took it (`used` 0: the value of the entry). A tag uses `tag_slot`.
+## The checks come when the next place opens and when the level ends (`nest`): the place before has its item (`owe`
+## is false), and the level has a place left. A second item in a place finds no open place (`begin`). So the call of
+## `write_value` is the last step, and its writer is not read here: no copy of the writer after each item.
 slot : Cbor.Writer, U64, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Writer, err)
 slot = |w, used, write_value| {
 	{ out, st } = w
-	if st.left < used {
-		return Ok({ out, st: { ..st, bad: Bool.True } })
-	}
-	id = st.next
-	left = st.left - used
-	level = st.level
+	bad = st.bad or st.owe or st.left < used
+	left = if (st.left < used) 0 else st.left - used
 	# The wasm32 dev backend copies the code around a closure call into each item encoder of the app, each copy with
 	# its own stack. So the argument is a name, and the call is alone in `run_slot` (README, "Known compiler issues").
-	inner = { out, st: { ..st, left: 1, level: id, next: id + 1 } }
-	close_slot(run_slot(inner, write_value), id, left, level)
+	run_slot({ out, st: { ..st, left, owe: Bool.True, bad } }, write_value)
+}
+
+## The one item after a tag head, on a level of its own with a new id: the item must be written with the writer
+## after the head. A value can hold a writer (an `encoder_for` of your own), also the writer of the place before the
+## tag, which has the level of the place: the new id tells the two apart, so the writer of the item is checked here.
+tag_slot : Cbor.Writer, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Writer, err)
+tag_slot = |w, write_value| {
+	{ out, st } = w
+	id = st.next
+	left = st.left
+	level = st.level
+	{ out: o, st: d } = run_slot({ out, st: { ..st, owe: Bool.True, level: id, next: id + 1 } }, write_value)?
+	ok = d.level == id and !d.owe
+	Ok({ out: o, st: { ..d, left, level, owe: Bool.False, bad: d.bad or !ok } })
 }
 
 ## Only the call of `write_value`: see `slot`.
 run_slot : Cbor.Writer, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Writer, err)
 run_slot = |inner, write_value| write_value(inner)
-
-## The end of `slot`: back to the current level. The list flag stays: the next U8 of a byte string list appends one byte.
-close_slot : Try(Cbor.Writer, err), U64, U64, U64 -> Try(Cbor.Writer, err)
-close_slot = |done, id, left, level| {
-	{ out: o, st: d } = done?
-	ok = d.level == id and d.left == 0
-	Ok({ out: o, st: { ..d, left, level, bad: d.bad or !ok } })
-}
 
 ## A record with absent fields (`n` is less than `count`): the head at `start` for `n` in place of `count`. The shortest head for `n`
 ## is not longer. The bytes that it frees are a gap, which `finish_output` removes once for the whole output.
@@ -2382,7 +2388,7 @@ low_zero = |x, n| x.bitwise_and((1.U64).shl_wrap(n) - 1) == 0
 ## no value is written, so it costs O(fields) for each record, with a sort.
 camel_collision : (Cbor.Container, (Cbor.Container, Str, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Bool
 camel_collision = |write_fields| {
-	empty = { out: [], st: { left: 0, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel } }
+	empty = { out: [], st: { left: 0, owe: Bool.False, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel } }
 	keys = write_fields(Cbor.Container.(empty), |Cbor.Container.({ out, st }), name, _| Ok(Cbor.Container.({ out: put_text(out, name), st })))
 	match keys {
 		Ok(Cbor.Container.({ out, .. })) => text_duplicate(out)
@@ -2417,11 +2423,11 @@ head_size = |n| if (n < 24) 1 else if (n < 0x100) 2 else if (n < 0x10000) 3 else
 
 ## A writer for one item at the root.
 new_writer : [Snake, Camel] -> Cbor.Writer
-new_writer = |fields| { out: List.with_capacity(256), st: { left: 1, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields } }
+new_writer = |fields| { out: List.with_capacity(256), st: { left: 0, owe: Bool.True, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields } }
 
 ## The writer is the root writer, it wrote exactly one item, and each level got its count.
 counts_match : Cbor.Writer -> Bool
-counts_match = |w| !w.st.bad and w.st.left == 0 and w.st.level == 0
+counts_match = |w| !w.st.bad and !w.st.owe and w.st.level == 0
 
 ## The output with the gaps of old record heads removed: one pass, in place.
 finish_output : Cbor.Writer -> List(U8)
