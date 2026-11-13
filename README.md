@@ -792,6 +792,8 @@ The codec contract of the Roc compiler of 2026-11-08 and later: each format owns
 | Streams | The item readers of `Cbor.Items` and `Cbor.Entries` are `Parseable(Cbor.Error)`. `push`, `finish` and `from_stream` give one closed union each: `Cbor.Error` with `TooLarge` (and `NotStreamable` for `Entries`, `Input(e)` from `from_stream`) |
 | `Readable` | `a.Cbor.Readable`, with no type parameter |
 | Fuzz | The targets use roc-fuzz 0.6.1, with examples |
+| Speed | Same API and bytes. `python3 bench/compare/run.py` (`--opt=speed`, `nightly-2026-11-13-03dce41`), time of 0.6.0 against the start of the 0.6 work: 10k records read 9.2 to 3.5 ms and write 2.7 to 1.3 ms; 100k map keys into a `Dict` 16 to 8.0 ms and into a `Cbor.Value` 19 to 10.6 ms; 10k records with unknown fields 29 to 12.5 ms; 10k texts 1.5 to 0.74 ms. A fast walk of the root item, fast paths of the readers at a plain position (each other case goes to the general reader, with the same values and error positions), and a writer that checks each place when the next one opens. The peak RSS of a `Cbor.Value` of 100k map keys: 25 to 18 MB |
+| `fuzz.sh` | A build with warnings only (exit code 2) is a build: roc-fuzz 0.6.1 has a warning in its platform |
 | CI nightly | `.roc-version` is `nightly-2026-11-13-03dce41`. The tests also pass on `nightly-2026-11-11-7679cc5` |
 
 #### Migration from 0.5
