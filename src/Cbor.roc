@@ -1357,7 +1357,11 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_str : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
-	parse_str = |cbor, state| text(untag(cbor, state)?)
+	parse_str = |cbor, state|
+		match short_text(cbor, state) {
+			Ok(t) => Ok(t)
+			Err(NotShort) => text(untag(cbor, state)?)
+		}
 
 	## A byte string (major type 2) only. Use it in a `parser_for` of your own.
 	parse_bytes : Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
@@ -1430,6 +1434,19 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_u64 : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u64 = |cbor, state| {
+		if plain_at(cbor, state) {
+			# Major type 0 with any head: the walk checked the head and its bytes.
+			match state.bytes.get(state.pos) {
+				Ok(b) if b < 0x18 => return Ok({ value: b.to_u64(), rest: at(state, state.pos + 1) })
+				Ok(b) if b <= 0x1b => {
+					size = (1.U64).shl_wrap((b - 0x18).to_u8_wrap())
+					if size < state.bytes.len() - state.pos {
+						return Ok({ value: get_be(state.bytes, state.pos + 1, size), rest: at(state, state.pos + 1 + size) })
+					}
+				}
+				_ => {}
+			}
+		}
 		n = int(cbor, state)?
 		Ok({ value: n.value.to_u64_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
@@ -1650,6 +1667,13 @@ Cbor :: {
 		[InvalidCbor(U64), MissingRequiredField(Str)],
 	)
 	parse_record_field = |cbor, fields, state| {
+		if !cbor.read.camel and !cbor.read.reject_unknown and !cbor.read.null_as_absent and !skipped(state) {
+			# The common case: a short text key, no key to skip. The derived parser matches the name.
+			match short_text(cbor, state) {
+				Ok({ value, rest }) => return Ok(TryField({ name: value, rest }))
+				Err(NotShort) => {}
+			}
+		}
 		if at_break(state) {
 			# The end of a map of indefinite length.
 			return Ok(Done(at(state, state.pos + 1)))
@@ -3069,6 +3093,33 @@ exact_key_dups = |state, parsed, dups| {
 	} else {
 		Err(InvalidCbor(state.pos))
 	}
+}
+
+## The item at `state` is read as it is: not a byte of a byte string read as a `List(U8)`, not the map of an internal
+## tag (`at_content`), and no tag of `ignore_tags` can be before it (`skip_tags`). Then `untag` gives `state`.
+plain_at : Cbor, Cbor.Reader -> Bool
+plain_at = |cbor, state| state.raw == 0 and state.pos != cbor.content.at and cbor.ignore_tags.is_empty()
+
+## A text of 255 bytes or less with a head of 1 or 2 bytes (`60` to `78`) at a plain position (`plain_at`): the fast path of
+## `parse_str` and of a record key. `NotShort` for each other case, and for invalid UTF-8 (the slow path gives the error).
+short_text : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [NotShort])
+short_text = |cbor, state| {
+	b = state.bytes.get(state.pos) ? |_| NotShort
+	if b < 0x60 or b > 0x78 or !plain_at(cbor, state) {
+		return Err(NotShort)
+	}
+	# `78`: the length is the next byte (24 to 255 bytes).
+	(len, start) =
+		if b == 0x78 {
+			((state.bytes.get(state.pos + 1) ? |_| NotShort).to_u64(), state.pos + 2)
+		} else {
+			((b - 0x60).to_u64(), state.pos + 1)
+		}
+	if len > state.bytes.len() - start {
+		return Err(NotShort)
+	}
+	value = Str.from_utf8(state.bytes.sublist({ start, len })) ? |_| NotShort
+	Ok({ value, rest: at(state, start + len) })
 }
 
 ## The item that the reader of a type reads at `state`: the item at the content key when `state` is at the map
@@ -7182,6 +7233,54 @@ expect all_bytes.all(|a| all_bytes.all(|b| same_utf8([a, b])))
 expect all_bytes.all(|a| all_bytes.all(|b| utf8_edges.all(|c| same_utf8([a, b, c]))))
 expect [0xf0, 0xf1, 0xf3, 0xf4, 0xf5].all(|a| all_bytes.all(|b| utf8_edges.all(|c| utf8_edges.all(|d| same_utf8([a, b, c, d])))))
 expect same_utf8("é漢🎉 user-é漢🎉-ü1".to_utf8()) and same_utf8([0x61, 0xe6, 0xbc]) and same_utf8([])
+
+## The fast paths of `parse_str`, of a record key and of `parse_u64` (`short_text`, `plain_at`): each head width, and
+## the cases they give to the general reader, with the same value or error position.
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse([0x78, 0x18].concat(List.repeat('a', 24)))
+	r == Ok(Str.repeat("a", 24))
+}
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse([0x78, 0x18, 'a'])
+	r == Err(InvalidCbor(0))
+}
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse([0x62, 0xc3, 0x28])
+	r == Err(InvalidCbor(0))
+}
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse_with([0xc6, 0x61, 0x61], { ignore_tags: [6] })
+	r == Ok("a")
+}
+expect {
+	r : Try(List(U64), _)
+	r = Cbor.parse([0x84, 0x17, 0x18, 0x18, 0x19, 0x01, 0x00, 0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+	r == Ok([23, 24, 256, U64.highest])
+}
+expect {
+	r : Try(U64, _)
+	r = Cbor.parse_with([0x19, 0x00, 0x05], { allow: [PaddedNumbers] })
+	r == Ok(5)
+}
+expect {
+	r : Try({ ab : U64 }, _)
+	r = Cbor.parse([0xa2, 0x62, 0x61, 0x62, 0x01, 0x78, 0x18].concat(List.repeat('x', 24)).append(0x02))
+	r == Ok({ ab: 1 })
+}
+expect {
+	r : Try({ ab : U64 }, _)
+	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: Last })
+	r == Ok({ ab: 2 })
+}
+expect {
+	r : Try({ ab : U64 }, _)
+	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: First })
+	r == Ok({ ab: 1 })
+}
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
 ## parts (a walk of the first part, then a walk of the whole prefix from its `Cut` state) give the same result,
