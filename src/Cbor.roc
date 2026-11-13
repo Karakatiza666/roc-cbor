@@ -6546,27 +6546,56 @@ encode_step! = |state, steps| {
 
 # RFC 8949 Appendix A vectors (the part in this profile)
 
+## The U64 0 writes as 00.
 expect Cbor.encode(0.U64) == [0x00]
+
+## The U64 23 writes as 17, in the head.
 expect Cbor.encode(23.U64) == [0x17]
+
+## The U64 24 writes as 18 18, with a 1-byte argument.
 expect Cbor.encode(24.U64) == [0x18, 0x18]
+
+## The U64 1000 writes as 19 03 e8, with a 2-byte argument.
 expect Cbor.encode(1000.U64) == [0x19, 0x03, 0xe8]
+
+## The U64 1000000 writes as 1a 00 0f 42 40, with a 4-byte argument.
 expect Cbor.encode(1000000.U64) == [0x1a, 0x00, 0x0f, 0x42, 0x40]
+
+## The largest U64 writes as 1b and 8 bytes of ff.
 expect Cbor.encode(18446744073709551615.U64) == [0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## The I64 -1 writes as 20.
 expect Cbor.encode(-1.I64) == [0x20]
+
+## The I64 -1000 writes as 39 03 e7.
 expect Cbor.encode(-1000.I64) == [0x39, 0x03, 0xe7]
+
+## The F64 1.1 writes as an f64 (fb 3f f1 99 99 99 99 99 9a).
 expect Cbor.encode(1.1.F64) == [0xfb, 0x3f, 0xf1, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a]
+
+## Bool.True writes as f5.
 expect Cbor.encode(Bool.True) == [0xf5]
+
+## The text "IETF" writes as 64 and its 4 bytes.
 expect Cbor.encode("IETF") == [0x64, 0x49, 0x45, 0x54, 0x46]
+
+## The text "ü" writes as 62 c3 bc (2 bytes of UTF-8).
 expect Cbor.encode("\u(fc)") == [0x62, 0xc3, 0xbc]
+
+## The list [1, 2, 3] writes as 83 01 02 03.
 expect Cbor.encode([1.U64, 2, 3]) == [0x83, 0x01, 0x02, 0x03]
+
+## The record { a: 1, b: [2, 3] } writes as a map of 2 with the text keys "a" and "b".
 expect Cbor.encode({ a: 1.U64, b: [2.U64, 3] }) == [0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x82, 0x02, 0x03]
 
+## A U64 with an 8-byte head (1b 00 00 00 e8 d4 a5 10 00) reads as 1000000000000.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse([0x1b, 0x00, 0x00, 0x00, 0xe8, 0xd4, 0xa5, 0x10, 0x00])
 	r == Ok(1000000000000)
 }
 
+## An I64 reads 38 63 as -100.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse([0x38, 0x63])
@@ -6580,6 +6609,7 @@ expect {
 	r == Ok([1.5, 65504.0, 0.00000005960464477539063, -4.0])
 }
 
+## An F64 reads the f32 fa 47 c3 50 00 as 100000.0.
 expect {
 	r : Try(F64, _)
 	r = Cbor.parse([0xfa, 0x47, 0xc3, 0x50, 0x00])
@@ -6604,6 +6634,7 @@ expect {
 
 Pkg : { name : Str, version : Str, size : U64, tags : List(Str), yanked : Bool }
 
+## A Pkg record (text, a number, a list of text, a bool) round trips.
 expect {
 	p : Pkg
 	p = { name: "roc-lang/http", version: "2.0.0", size: 51385, tags: ["http", "web"], yanked: Bool.False }
@@ -6620,6 +6651,7 @@ expect {
 	r == Ok({ name: "x", nick: Err(Missing) })
 }
 
+## A record with no "age" field for a required age is the error MissingRequiredField("age").
 expect {
 	r : Try({ name : Str, age : U64 }, _)
 	r = Cbor.parse(Cbor.encode({ name: "x" }))
@@ -6635,6 +6667,7 @@ expect {
 
 Shape : [Circle(F64), Rect(F64, F64), Empty]
 
+## A list of tags, with a payload of 1 and 2 values and with no payload, round trips.
 expect {
 	shapes : List(Shape)
 	shapes = [Circle(1.5), Rect(2.0, 3.0), Empty]
@@ -6646,6 +6679,7 @@ expect {
 ## The same shapes as Json: {"Circle": 1.5} and "Empty"
 expect Cbor.encode(Empty) == [0x65, 0x45, 0x6d, 0x70, 0x74, 0x79]
 
+## With fields: Camel, the key "userId" reads as the field user_id: 7.
 expect {
 	r : Try({ user_id : U64 }, _)
 	r = Cbor.parse_with([0xa1, 0x66, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x07], { fields: Camel })
@@ -6663,6 +6697,8 @@ expect {
 
 ## A List(U8) writes a byte string (h'010203'). Cbor.U8Array writes an array of numbers.
 expect Cbor.encode([1.U8, 2, 3]) == [0x43, 0x01, 0x02, 0x03]
+
+## A Cbor.U8Array of [1, 2, 3] writes as an array: 83 01 02 03.
 expect Cbor.encode(Cbor.U8Array.([1, 2, 3])) == [0x83, 0x01, 0x02, 0x03]
 
 ## A List(U8) reads a byte string, also as a record field, and round trips.
@@ -6688,18 +6724,21 @@ expect {
 	r == Ok({ id: 7, data: Cbor.U8Array.([0, 255]) })
 }
 
+## An empty array (80) reads as an empty Cbor.U8Array.
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x80])
 	r == Ok(Cbor.U8Array.([]))
 }
 
+## With `FloatToInt`, the f64 3.0 in an array reads as the Cbor.U8Array [3].
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse_with([0x81, 0xfb, 0x40, 0x08, 0, 0, 0, 0, 0, 0], { allow: [FloatToInt] })
 	r == Ok(Cbor.U8Array.([3]))
 }
 
+## With no option, the f64 3.0 in an array is an error at the item (byte 1).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0xfb, 0x40, 0x08, 0, 0, 0, 0, 0, 0])
@@ -6713,18 +6752,21 @@ expect {
 	r == Err(InvalidCbor(2))
 }
 
+## The item -1 is an error at the item (byte 2).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x82, 0x01, 0x20])
 	r == Err(InvalidCbor(2))
 }
 
+## The item 1.5 (an f64) is an error at the item (byte 1).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
 	r == Err(InvalidCbor(1))
 }
 
+## The text item "1" is an error at the item (byte 1).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0x61, 0x31])
@@ -6738,6 +6780,7 @@ expect {
 	r == Err(InvalidCbor(1))
 }
 
+## An array count of 2^36, more than the input, is an error at the array (byte 0).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x9b, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00])
@@ -6751,6 +6794,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## The integer 1 is not an array: an error at byte 0.
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x01])
@@ -6764,12 +6808,14 @@ expect {
 	r == Ok({ id: 7, data: [1, 2, 3] })
 }
 
+## With `BytesFromArray`, the array [1, 2] reads as the List(U8) [1, 2].
 expect {
 	r : Try(List(U8), _)
 	r = Cbor.parse_with([0x82, 0x01, 0x02], { allow: [BytesFromArray] })
 	r == Ok([1, 2])
 }
 
+## With no option, the array [1, 2] read as a List(U8) is an error at the array (byte 0).
 expect {
 	r : Try(List(U8), _)
 	r = Cbor.parse([0x82, 0x01, 0x02])
@@ -6780,18 +6826,38 @@ expect {
 
 ## A Dec with no fraction writes as an integer: an untyped literal list works as a SQL parameter list.
 expect Cbor.encode([1]) == [0x81, 0x01]
+
+## The Dec 0 writes as the integer 00.
 expect Cbor.encode(0.Dec) == [0x00]
+
+## The Dec 1000 writes as the integer 19 03 e8.
 expect Cbor.encode(1000.Dec) == [0x19, 0x03, 0xe8]
+
+## The Dec -1 writes as the integer 20.
 expect Cbor.encode(-1.Dec) == [0x20]
+
+## The Dec -1000 writes as the integer 39 03 e7.
 expect Cbor.encode(-1000.Dec) == [0x39, 0x03, 0xe7]
+
+## The Dec 2^64 - 1 writes as the integer 1b and 8 bytes of ff.
 expect Cbor.encode(18446744073709551615.Dec) == [0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## The Dec -2^64 writes as the integer 3b and 8 bytes of ff.
 expect Cbor.encode(-18446744073709551616.Dec) == [0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
 
 ## A Dec with a fraction writes as a decimal fraction, tag 4 and [exponent, mantissa]: 3.14159 is [-5, 314159].
 expect Cbor.encode(3.14159.Dec) == [0xc4, 0x82, 0x24, 0x1a, 0x00, 0x04, 0xcb, 0x2f]
+
+## The Dec 0.1 writes as the decimal fraction [-1, 1].
 expect Cbor.encode(0.1.Dec) == [0xc4, 0x82, 0x20, 0x01]
+
+## The Dec 1.1 writes as the decimal fraction [-1, 11].
 expect Cbor.encode(1.1.Dec) == [0xc4, 0x82, 0x20, 0x0b]
+
+## The Dec -0.5 writes as the decimal fraction [-1, -5].
 expect Cbor.encode(-0.5.Dec) == [0xc4, 0x82, 0x20, 0x24]
+
+## The smallest unit of a Dec (10^-18) writes as the decimal fraction [-18, 1].
 expect Cbor.encode(0.000000000000000001.Dec) == [0xc4, 0x82, 0x31, 0x01]
 
 ## A whole Dec outside the integer range of CBOR is a decimal fraction too, with a positive exponent: 10^20 is [20, 1].
@@ -6799,7 +6865,11 @@ expect Cbor.encode(100000000000000000000.Dec) == [0xc4, 0x82, 0x14, 0x01]
 
 ## A mantissa outside the 64 bit integers is a bignum (tag 2, tag 3: -1 - n) with a byte string.
 expect Cbor.encode(18446744073709551616.Dec) == [0xc4, 0x82, 0x00, 0xc2, 0x49, 0x01, 0, 0, 0, 0, 0, 0, 0, 0]
+
+## Dec.highest writes as [-18, a tag 2 bignum of 16 bytes 7f ff .. ff].
 expect Cbor.encode(Dec.highest) == [0xc4, 0x82, 0x31, 0xc2, 0x50, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## Dec.lowest writes as [-18, a tag 3 bignum of 16 bytes 7f ff .. ff].
 expect Cbor.encode(Dec.lowest) == [0xc4, 0x82, 0x31, 0xc3, 0x50, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
 
 ## Dec reads an integer, a decimal fraction or a float.
@@ -6809,18 +6879,21 @@ expect {
 	r == Ok(42)
 }
 
+## A Dec reads the integer -2^64 (3b and 8 bytes of ff).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
 	r == Ok(-18446744073709551616)
 }
 
+## A Dec reads the f64 1.5 as 1.5.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
 	r == Ok(1.5)
 }
 
+## A Dec reads the f16 1.5 (f9 3e 00) as 1.5.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xf9, 0x3e, 0x00])
@@ -6844,6 +6917,7 @@ expect {
 	r == Ok([300, 0.000000000000000010, 0.000000000000000001])
 }
 
+## With no option, a bignum mantissa with a leading zero byte is an error at its tag (byte 12).
 expect {
 	r : Try(List(Dec), _)
 	r = Cbor.parse([0x83, 0xc4, 0x82, 0x02, 0x03, 0xc4, 0x82, 0x31, 0x0a, 0xc4, 0x82, 0x31, 0xc2, 0x42, 0x00, 0x01])
@@ -6857,6 +6931,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## The decimal fraction [21, 1] (10^21) is out of the range of a Dec: an error at the tag (byte 0).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x82, 0x15, 0x01])
@@ -6870,6 +6945,7 @@ expect {
 	r == Ok(0.000000000000000001)
 }
 
+## A decimal fraction with the exponent 2^63 - 1 is an error at its tag (byte 1).
 expect {
 	r : Try(List(Dec), _)
 	r = Cbor.parse([0x82, 0xc4, 0x82, 0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0xc4, 0x82, 0x3b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
@@ -6890,18 +6966,21 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A tag 4 with an array of 3 is an error at the tag (byte 0).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x83, 0x20, 0x01, 0x01])
 	r == Err(InvalidCbor(0))
 }
 
+## A decimal fraction with a text mantissa is an error at the mantissa (byte 3).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x82, 0x20, 0x61, 0x31])
 	r == Err(InvalidCbor(3))
 }
 
+## A bignum mantissa of 17 bytes with no leading zero is an error at the bignum tag (byte 3).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x82, 0x31, 0xc2, 0x51].concat(List.repeat(1, 17)))
@@ -6938,12 +7017,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## An f64 infinity read as a Dec is an error at byte 0.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse(Cbor.encode(F64.infinity))
 	r == Err(InvalidCbor(0))
 }
 
+## The f64 1.0e30, outside the range of a Dec, is an error at byte 0.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse(Cbor.encode(1.0e30.F64))
@@ -7022,6 +7103,7 @@ expect {
 	r == Ok({ n: Err(Missing) })
 }
 
+## An unknown field with 100,000 nested arrays is an error at byte 514, the 513th head.
 expect {
 	r : Try({ n : Try(U64, [Missing]) }, _)
 	r = Cbor.parse([0xa1, 0x61, 0x78].concat(List.repeat(0x81, 100000)).append(0x00))
@@ -7035,12 +7117,14 @@ expect {
 	r == Err(InvalidCbor(1))
 }
 
+## A byte string h'f5' read as a List(Bool) is an error at byte 1.
 expect {
 	r : Try(List(Bool), _)
 	r = Cbor.parse([0x41, 0xf5])
 	r == Err(InvalidCbor(1))
 }
 
+## A byte string h'f6' read as a List(Try(U64, [Null])) is an error at byte 1.
 expect {
 	r : Try(List(Try(U64, [Null])), _)
 	r = Cbor.parse([0x41, 0xf6])
@@ -7068,6 +7152,7 @@ expect {
 	r == Ok([F32.highest, -F32.highest, F32.infinity])
 }
 
+## An f64 NaN reads as an F32 NaN.
 expect {
 	r : Try(F32, _)
 	r = Cbor.parse(Cbor.encode(F64.nan))
@@ -7111,12 +7196,14 @@ expect {
 	r == Ok(9007199254740991)
 }
 
+## With `FloatToInt`, the f64 -(2^53 - 1) reads as the I64 -9007199254740991.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse_with([0xfb, 0xc3, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], floats)
 	r == Ok(-9007199254740991)
 }
 
+## With no option, the f64 -(2^53 - 1) read as an I64 is an error at byte 0.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse([0xfb, 0xc3, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
@@ -7144,18 +7231,21 @@ expect {
 	r == Ok(-9223372036854775808)
 }
 
+## With `IntFromText`, the text "9223372036854775807" reads as the largest I64.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse_with(cbor_text("9223372036854775807"), ints)
 	r == Ok(9223372036854775807)
 }
 
+## With `IntFromText`, the text "0" reads as the I64 0.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse_with(cbor_text("0"), ints)
 	r == Ok(0)
 }
 
+## With `IntFromText`, the text "18446744073709551615" reads as the largest U64.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with(cbor_text("18446744073709551615"), ints)
@@ -7169,12 +7259,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## With `IntFromText`, the text "256" read as a U8 is an error at byte 0.
 expect {
 	r : Try(U8, _)
 	r = Cbor.parse_with(cbor_text("256"), ints)
 	r == Err(InvalidCbor(0))
 }
 
+## With `IntFromText`, the text "-1" read as a U64 is an error at byte 0.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with(cbor_text("-1"), ints)
@@ -7212,6 +7304,7 @@ expect {
 	r == Ok([{ name: "a", id: 123 }])
 }
 
+## With `IntFromText`, the text "1.5" in the field "id" is an error at its position (byte 12).
 expect {
 	r : Try(List({ name : Str, id : I64 }), _)
 	r = Cbor.parse_with([0x81, 0xa2, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x61, 0x61, 0x62, 0x69, 0x64].concat(cbor_text("1.5")), ints)
@@ -7237,22 +7330,38 @@ expect {
 
 ## path_at names the item of an error position.
 expect Cbor.path_at(float_big, 12) == Ok([Index(0), Key("id")])
+
+## path_at of float_big at 7 (the value of "name") is [Index(0), Key("name")].
 expect Cbor.path_at(float_big, 7) == Ok([Index(0), Key("name")])
+
+## path_at of float_big at 1 (the map) is [Index(0)].
 expect Cbor.path_at(float_big, 1) == Ok([Index(0)])
+
+## path_at of float_big at 0 (the root item) is the empty path.
 expect Cbor.path_at(float_big, 0) == Ok([])
 
 ## A position in the middle of an item, at a map key, or past the end: not found.
 expect Cbor.path_at(float_big, 13) == Err(NotFound)
+
+## path_at of float_big at 2 (the key "name") is NotFound.
 expect Cbor.path_at(float_big, 2) == Err(NotFound)
+
+## path_at of float_big at 99 (past the end) is NotFound.
 expect Cbor.path_at(float_big, 99) == Err(NotFound)
 
 ## The second item of an array, after a nested map, and in a tagged value.
 expect Cbor.path_at([0x82, 0xa1, 0x61, 0x61, 0x81, 0x01, 0x02], 6) == Ok([Index(1)])
+
+## path_at at 5 (the item 1 in [{"a": [1]}, 2]) is [Index(0), Key("a"), Index(0)].
 expect Cbor.path_at([0x82, 0xa1, 0x61, 0x61, 0x81, 0x01, 0x02], 5) == Ok([Index(0), Key("a"), Index(0)])
+
+## path_at at 3 (the second item of the array in tag 1) is [Index(1)].
 expect Cbor.path_at([0xc1, 0x82, 0x01, 0x02], 3) == Ok([Index(1)])
 
 ## 512 nested arrays: a loop, not a recursion. path_at has no depth limit, so it finds the item of any depth error.
 expect Cbor.path_at(List.repeat(0x81, 512).append(0x00), 512) == Ok(List.repeat(Index(0), 512))
+
+## path_at of the item in 100,000 nested arrays is 100,000 of Index(0).
 expect Cbor.path_at(List.repeat(0x81, 100000).append(0x00), 100000) == Ok(List.repeat(Index(0), 100000))
 
 ## The rule `shortest_heads` (the default of a parse): a head with more bytes than its argument needs is an error.
@@ -7260,24 +7369,49 @@ expect Cbor.path_at(List.repeat(0x81, 100000).append(0x00), 100000) == Ok(List.r
 strict : Rules
 strict = { max_depth: 512, max_items: U64.highest, shortest_heads: Bool.True, indefinite: Bool.False, keys: Reject, order: Any }
 
+## head_at with the strict rules: 18 17 (a padded 23) is an error at byte 0.
 expect head_at([0x18, 0x17], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 18 18 reads the argument 24.
 expect head_at([0x18, 0x18], 0, strict).map_ok(|h| h.arg) == Ok(24)
+
+## head_at with the strict rules: 39 00 ff (a padded 255) is an error at byte 0.
 expect head_at([0x39, 0x00, 0xff], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 39 01 00 reads the argument 256.
 expect head_at([0x39, 0x01, 0x00], 0, strict).map_ok(|h| h.arg) == Ok(256)
+
+## head_at with the strict rules: 5a 00 00 ff ff (a padded byte string length) is an error at byte 0.
 expect head_at([0x5a, 0x00, 0x00, 0xff, 0xff], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 5a 00 01 00 00 reads the argument 65536.
 expect head_at([0x5a, 0x00, 0x01, 0x00, 0x00], 0, strict).map_ok(|h| h.arg) == Ok(65536)
+
+## head_at with the strict rules: 9b 00 00 00 00 ff ff ff ff (a padded array count) is an error at byte 0.
 expect head_at([0x9b, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 9b 00 00 00 01 00 00 00 00 reads the argument 2^32.
 expect head_at([0x9b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00], 0, strict).map_ok(|h| h.arg) == Ok(4294967296)
+
+## head_at with the strict rules: the f16 f9 00 00 is not a padded head, so it reads.
 expect head_at([0xf9, 0x00, 0x00], 0, strict).is_ok()
+
+## walk with the strict rules: 81 18 01 (a padded 1 in an array) is an error at byte 1.
 expect walk(reader([0x81, 0x18, 0x01]), strict, Bool.False).map_ok(|s| s.pos) == Err(InvalidCbor(1))
+
+## skip does not check the shortest heads: it skips 81 18 01 to the end (byte 3).
 expect skip(reader([0x81, 0x18, 0x01])).map_ok(|s| s.pos) == Ok(3)
 
 ## The depth limit: 512 nested arrays walk, 513 is an error at the 513th head.
 expect walk(reader(List.repeat(0x81, 512).append(0x00)), strict, Bool.False).is_ok()
+
+## walk with the strict rules: 513 nested arrays are an error at byte 512, the 513th head.
 expect walk(reader(List.repeat(0x81, 513).append(0x00)), strict, Bool.False).map_ok(|s| s.pos) == Err(InvalidCbor(512))
 
 ## A walk with `keep` gives the start and end of each map. A later walk takes the end of a map from `map_ends`.
 expect walk(reader([0x81, 0xa1, 0x01, 0xa0]), loose, Bool.True).map_ok(|s| memo_of(s).map_ends) == Ok([1, 4])
+
+## skip takes the end of a map from `map_ends`: with the map at 1 ending at 2, the skip ends at byte 2.
 expect skip(with_memo(reader([0x81, 0xa1, 0x01, 0xa0]), { ..no_memo, map_ends: [1, 2] })).map_ok(|s| s.pos) == Ok(2)
 
 ## `walk` takes the fast path (`fast_walk`) when it can: it gives the same end, the same keys to skip, and the same
@@ -7601,13 +7735,29 @@ with_dup = [0x84, 0xa2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02, 0xc1, 0x02, 0x1b, 0x
 
 ## Valid items, and items with an error, with each rule set: one part and two parts agree.
 expect same_walks(nested, indefinite_rules, Bool.False)
+
+## nested with indefinite lengths and `keep`: one part and two parts agree.
 expect same_walks(nested, indefinite_rules, Bool.True)
+
+## nested with indefinite lengths, `keys: First` and `keep`: one part and two parts agree.
 expect same_walks(nested, { ..indefinite_rules, keys: First }, Bool.True)
+
+## nested with the rules any_length: one part and two parts agree.
 expect same_walks(nested, any_length, Bool.False)
+
+## with_dup with `keys: First` and `keep`: one part and two parts agree.
 expect same_walks(with_dup, { ..strict, keys: First }, Bool.True)
+
+## with_dup with the strict rules (a duplicate key is an error): one part and two parts agree.
 expect same_walks(with_dup, strict, Bool.False)
+
+## An array with a reserved head (1c) is an error: one part and two parts agree.
 expect same_walks([0x82, 0x01, 0x1c, 0x00], strict, Bool.False)
+
+## A text chunk in a byte string of indefinite length, in a map of indefinite length: one part and two parts agree.
 expect same_walks([0xbf, 0x61, 0x61, 0x5f, 0x41, 0x01, 0x61, 0x02, 0xff, 0xff], indefinite_rules, Bool.False)
+
+## An array count of 2^60 with 2 bytes left: one part and two parts agree.
 expect same_walks([0x9b, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00], strict, Bool.False)
 
 ## The end of a whole walk of `bytes`, or the position of its error.
@@ -7632,22 +7782,50 @@ sorted_dup = [0x82, 0xa3, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02, 0x61, 0x62, 0x03, 
 
 ## key_order: Sorted: the check is in the walk, so a cut and a walk from the cut state give the same result.
 expect same_walks(sorted_nested, sorted_rules, Bool.False)
+
+## sorted_nested with `Sorted`, `keys: First` and `keep`: one part and two parts agree.
 expect same_walks(sorted_nested, { ..sorted_rules, keys: First }, Bool.True)
+
+## sorted_dup with `Sorted` and a duplicate key as an error: one part and two parts agree.
 expect same_walks(sorted_dup, sorted_rules, Bool.False)
+
+## sorted_dup with `Sorted` and `keys: First`: one part and two parts agree.
 expect same_walks(sorted_dup, { ..sorted_rules, keys: First }, Bool.False)
+
+## sorted_dup with `Sorted`, `keys: Last` and `keep`: one part and two parts agree.
 expect same_walks(sorted_dup, { ..sorted_rules, keys: Last }, Bool.True)
+
+## nested with indefinite lengths and `Sorted`: one part and two parts agree.
 expect same_walks(nested, { ..indefinite_rules, order: Sorted }, Bool.False)
+
+## sorted_nested with `Sorted` is whole, with the end at 21.
 expect walk_end(sorted_nested, sorted_rules) == Ok(21)
+
+## sorted_dup with `Sorted` and a duplicate key as an error: the error is at the second "a" (byte 5).
 expect walk_end(sorted_dup, sorted_rules) == Err(5)
+
+## {"b": 1, "a": 2} with `Sorted` and `keys: First`: the key out of order is an error at byte 4.
 expect walk_end(sorted_dup.drop_first(11), { ..sorted_rules, keys: First }) == Err(4)
+
+## {"b": 1, "a": 2} with the strict rules (no order check) is whole, with the end at 7.
 expect walk_end(sorted_dup.drop_first(11), strict) == Ok(7)
+
+## {"a": 1, "a": 2, "b": 3} with `Sorted` and `keys: First`: the key to skip is the second "a" (at 4).
 expect whole_state(walk_from(sorted_dup.sublist({ start: 1, len: 10 }), walk_start(0, [], Bool.False), { ..sorted_rules, keys: First })).map_ok(|ws| ws.skips) == Ok([4])
+
+## {"a": 1, "a": 2, "b": 3} with `Sorted` and `keys: Last`: the key to skip is the first "a" (at 1).
 expect whole_state(walk_from(sorted_dup.sublist({ start: 1, len: 10 }), walk_start(0, [], Bool.False), { ..sorted_rules, keys: Last })).map_ok(|ws| ws.skips) == Ok([1])
 
 ## The order compares the deterministic encoding: a padded head and a float of more bytes than it needs.
 expect order_keys([0x18, 0x0a, 0x20], 0, 2, 2, 3, { ..strict, shortest_heads: Bool.False }) == Before
+
+## order_keys: the f64 1.0 comes before the f32 1.5.
 expect order_keys([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0xfa, 0x3f, 0xc0, 0, 0], 0, 9, 9, 14, strict) == Before
+
+## order_keys: the f64 1.0 and the f16 1.0 are the same key.
 expect order_keys([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0xf9, 0x3c, 0x00], 0, 9, 9, 12, strict) == Same
+
+## deterministic writes the f64 1.0 as the f16 f9 3c 00.
 expect deterministic([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0], 0, 9, Keep) == [0xf9, 0x3c, 0x00]
 
 ## The state at a cut holds the work so far: the items, the open items, the keys of the open map.
@@ -7656,6 +7834,8 @@ expect
 		Ok(ws) => ws.pos == 5 and ws.count == 4 and ws.open.len() == 2 and ws.keys == [2, 4]
 		Err(_) => Bool.False
 	}
+
+## A whole walk of with_dup with `keys: First` ends at 28, and the key to skip is the second "a" (at 5).
 expect whole_state(walk_from(with_dup, walk_start(0, [], Bool.True), { ..strict, keys: First })).map_ok(|ws| (ws.pos, ws.skips)) == Ok((28, [5]))
 
 ## The truncation rule: the head of the innermost item that is not whole. A chunk of a string of indefinite
@@ -7667,8 +7847,14 @@ expect walk(reader([0xbb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00])
 
 ## Keys with the shortest heads: the same key with another head width is the same key.
 expect canonical([0x78, 0x01, 0x61, 0x19, 0x00, 0x05], 0, 6, Keep) == [0x61, 0x61, 0x05]
+
+## canonical writes the f16 1.0 as the f64 1.0.
 expect canonical([0xf9, 0x3c, 0x00], 0, 3, Keep) == [0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0]
+
+## dup_keys with no shortest heads: "a" and "a" with a padded head (78 01 61) are the same key, an error at byte 4.
 expect dup_keys([0xa2, 0x61, 0x61, 0x01, 0x78, 0x01, 0x61, 0x02], [1, 3, 4, 7], { ..strict, shortest_heads: Bool.False }) == Err(InvalidCbor(4))
+
+## dup_keys with the strict rules compares the key bytes as they are: "a" and 78 01 61 differ, no key to skip.
 expect dup_keys([0xa2, 0x61, 0x61, 0x01, 0x78, 0x01, 0x61, 0x02], [1, 3, 4, 7], strict) == Ok([])
 
 ## A key rule for each instance: `First` skips the later ones, `Last` the earlier ones. 20 keys (the sort), 3 of them "a".
@@ -7684,8 +7870,13 @@ many_keys = {
 	{ bytes, keys }
 }
 
+## dup_keys of many_keys with `Reject`: the error is at the second "a" (byte 14).
 expect dup_keys(many_keys.bytes, many_keys.keys, strict) == Err(InvalidCbor(14))
+
+## dup_keys of many_keys with `keys: First`: the keys to skip are the later "a" keys, at 14 and 30.
 expect dup_keys(many_keys.bytes, many_keys.keys, { ..strict, keys: First }) == Ok([14, 30])
+
+## dup_keys of many_keys with `keys: Last`: the keys to skip are the earlier "a" keys, at 0 and 14.
 expect dup_keys(many_keys.bytes, many_keys.keys, { ..strict, keys: Last }) == Ok([0, 14])
 
 ## Options: each field is optional. The full record, a record bound with let (with the annotation `Cbor.Options`), one field, and no field.
