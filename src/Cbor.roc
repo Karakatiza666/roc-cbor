@@ -156,6 +156,22 @@ Cbor :: {
 		chunks : Bool,
 		# The lists that most parses do not use (`ReaderMemo`). `Plain` when each one is empty.
 		memo : [Plain, Memo(Box(ReaderMemo))],
+	}.{
+
+		## Starts a read of your own, for a format outside the package (section "A format of your own"). The checks of
+		## `parse_with` with `options` come first, on all of `bytes` (the walk), and `bytes` must be exactly one item:
+		## bytes after it are `InvalidCbor` at the first of them. Gives the `Cbor` that each `parse_*` method takes,
+		## and the reader at the item.
+		new : List(U8), Cbor.Options -> Try({ cbor : Cbor, reader : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
+		new = |bytes, options| {
+			setup = parse_setup(options)
+			walked = walk(reader(bytes), setup.rules, Bool.False)?
+			if (walked.pos == bytes.len()) Ok({ cbor: setup.cbor, reader: at(walked, 0) }) else Err(InvalidCbor(walked.pos))
+		}
+
+		## Ends a read of your own: `Ok({})` when the reader is at the end of the bytes, else `InvalidCbor` at the reader.
+		finish : Cbor.Reader -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str)])
+		finish = |state| if (state.pos == state.bytes.len() and memo_of(state).outer.is_empty()) Ok({}) else Err(InvalidCbor(state.pos))
 	}
 
 	## The output of an encode. The derived `encoder_for` of a type passes it from item to item, and
@@ -180,12 +196,31 @@ Cbor :: {
 			# The bytes of old record heads, removed at the end of the encode.
 			gaps : List({ at : U64, len : U64 }),
 			fields : [Snake, Camel],
+			# `key_order: Sorted`: `finish` sorts each map.
+			sorted : Bool,
 		},
+	}.{
+
+		## Starts a write of your own of one root item, for a format outside the package (section "A format of your own").
+		## `fields` and `key_order` apply as in `encode_with`.
+		new : Cbor.WriteOptions -> Cbor.Writer
+		new = |options| new_writer(options.?fields ?? Snake, (options.?key_order ?? Given) == Sorted)
+
+		## Ends a write of your own: the bytes, with the checks of `encode_with` (`CountMismatch`, then `DuplicateMapKey`)
+		## and the sort of `key_order: Sorted`.
+		finish : Cbor.Writer -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])
+		finish = |w| finish_writer(w)
 	}
 
 	## The writer inside a list, a tuple, a record or a tag. Only the `add` callback of
 	## `encode_list` (and the like) can write to it, one item for each call.
 	Container :: Cbor.Writer
+
+	## A writer with a value of the caller beside it: the state of a write of a format outside the package.
+	WriterWith(s) : { writer : Cbor.Writer, state : s }
+
+	## A container with the value of the caller.
+	ContainerWith(s) : { container : Cbor.Container, state : s }
 
 	## The options of `encode_with`. Each field is optional: `{}` is the same as `encode`.
 	##
@@ -1232,7 +1267,7 @@ Cbor :: {
 	## `Cbor.encode_try` to get the error.
 	encode : a -> List(U8) where [a.Encodable([])]
 	encode = |value|
-		match Cbor.encode_item(value, new_writer(Snake)) {
+		match Cbor.encode_item(value, new_writer(Snake, Bool.False)) {
 			Ok(w) if counts_match(w) => finish_output(w)
 			_ => crash "Cbor.encode: an encoder_for wrote the wrong count of items (CountMismatch). Cbor.encode_try gives the error."
 		}
@@ -1242,7 +1277,7 @@ Cbor :: {
 	## Another error comes from your own `encoder_for`.
 	encode_try : a -> Try(List(U8), [CountMismatch, ..err]) where [a.Encodable([CountMismatch, ..err])]
 	encode_try = |value| {
-		w = Cbor.encode_item(value, new_writer(Snake))?
+		w = Cbor.encode_item(value, new_writer(Snake, Bool.False))?
 		if (counts_match(w)) Ok(finish_output(w)) else Err(CountMismatch)
 	}
 
@@ -1250,17 +1285,8 @@ Cbor :: {
 	## camelCase key (`fields: Camel`), or with `key_order: Sorted`, a map has two entries with the same key bytes.
 	encode_with : a, Cbor.WriteOptions -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err]) where [a.Encodable([CountMismatch, DuplicateMapKey, ..err])]
 	encode_with = |value, options| {
-		w = Cbor.encode_item(value, new_writer(options.?fields ?? Snake))?
-		if !counts_match(w) {
-			return Err(CountMismatch)
-		}
-		if w.st.dup {
-			return Err(DuplicateMapKey)
-		}
-		match options.?key_order ?? Given {
-			Given => Ok(finish_output(w))
-			Sorted => sort_maps(finish_output(w))
-		}
+		w = Cbor.encode_item(value, Cbor.Writer.new(options))?
+		finish_writer(w)
 	}
 
 	## Codec protocol: the record key to write. `Camel` (`encode_with`) gives the camelCase name.
@@ -2248,6 +2274,44 @@ Cbor :: {
 		nest(w, Head(4, count), Plain, Full, write_items, add_item).map_ok(|n| n.w)
 	}
 
+	## `encode_list` for a format outside the package: the item callbacks carry `state`, a value of the caller, with the writer.
+	encode_list_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_list_carry = |e, count, write_items| nest_carry(e, NoHead(count), Pending(count), Full, write_items, add_item_carry).map_ok(|n| n.e)
+
+	## `encode_tuple` with a value of the caller.
+	encode_tuple_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_tuple_carry = |e, count, write_items| nest_carry(e, Head(4, count), Plain, Full, write_items, add_item_carry).map_ok(|n| n.e)
+
+	## `encode_tag` with a value of the caller.
+	encode_tag_carry : Cbor.WriterWith(s), Str, U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_tag_carry = |e, name, count, write_payloads|
+		if count == 0 {
+			{ writer, state } = e
+			{ out, st } = begin(writer)
+			Ok({ writer: { out: put_text(out, name), st }, state })
+		} else {
+			nest_carry(e, Keyed(name, count), Plain, Full, write_payloads, add_item_carry).map_ok(|n| n.e)
+		}
+
+	## `encode_dict` with a value of the caller.
+	encode_dict_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_dict_carry = |e, count, write_entries| nest_carry(e, Head(5, count), Plain, Full, write_entries, add_entry_carry).map_ok(|n| n.e)
+
+	## `encode_record` with a value of the caller.
+	encode_record_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), Str, (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_record_carry = |e, count, write_fields| {
+		{ writer, state } = e
+		{ out, st } = writer
+		dup = st.fields == Camel and count > 1 and camel_collision_carry(write_fields, state)
+		match nest_carry({ writer: { out, st }, state }, Head(5, count), Plain, Partial, write_fields, add_field_carry) {
+			Ok({ e: { writer: done, state: after }, start, unused }) => {
+				{ out: o, st: d } = if (unused == 0) done else shorten_head(done, start, count, count - unused)
+				Ok({ writer: { out: o, st: { ..d, dup: d.dup or dup } }, state: after })
+			}
+			Err(x) => Err(x)
+		}
+	}
+
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
 	## No payload: the tag name as text. One payload: `{ name: payload }`. More: `{ name: [payloads] }`.
 	encode_tag : Cbor.Writer, Str, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
@@ -2321,16 +2385,95 @@ nest = |w, heads, list, need, write, add| {
 	# lost). A match that gives `Err(e)` with no return does not. When the issue is fixed, go back to `?` here and in
 	# the other writer functions with this TODO.
 	match write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), add) {
-		Ok(Cbor.Container.({ out: o, st: d })) => {
-			# A list with no item: its head is still to write.
-			pending = d.list == Pending(count)
-			done = if (pending) put_head(o, 4, count) else o
-			# The writer of this level, the last place with its item, and with `Full` each place opened.
-			ok = d.level == id and !d.owe and (need == Partial or d.left == 0)
-			Ok({ w: { out: done, st: { ..d, left, level, owe: Bool.False, list: Plain, bad: d.bad or !ok } }, start, unused: d.left })
+		Ok(Cbor.Container.(inner)) => {
+			unused = inner.st.left
+			Ok({ w: leave(inner, count, id, left, level, need), start, unused })
 		}
 		Err(e) => Err(e)
 	}
+}
+
+nest_carry : { writer : Cbor.Writer, state : s }, [NoHead(U64), Head(U8, U64), Keyed(Str, U64)], [Plain, Pending(U64), Bytes({ start : U64, count : U64 })], [Full, Partial], ({ container : Cbor.Container, state : s }, add -> Try({ container : Cbor.Container, state : s }, err)), add -> Try({ e : { writer : Cbor.Writer, state : s }, start : U64, unused : U64 }, err)
+nest_carry = |e, heads, list, need, write, add| {
+	{ writer, state } = e
+	{ out, st } = begin(writer)
+	count =
+		match heads {
+			NoHead(n) | Head(_, n) | Keyed(_, n) => n
+		}
+	start = out.len()
+	id = st.next
+	left = st.left
+	level = st.level
+	# TODO(roc#13035): a match with no early return (see `nest`).
+	match write({ container: Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), state }, add) {
+		Ok({ container: Cbor.Container.(inner), state: after }) => {
+			unused = inner.st.left
+			Ok({ e: { writer: leave(inner, count, id, left, level, need), state: after }, start, unused })
+		}
+		Err(x) => Err(x)
+	}
+}
+
+## `add_item` with a value of the caller.
+add_item_carry : { container : Cbor.Container, state : s }, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)
+add_item_carry = |c, write_value| {
+	{ container: Cbor.Container.(w), state } = c
+	slot_carry(w, state, 1, write_value).map_ok(|x| { container: Cbor.Container.(x.writer), state: x.state })
+}
+
+## `add_entry` with a value of the caller.
+add_entry_carry : { container : Cbor.Container, state : s }, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)), ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)
+add_entry_carry = |c, write_key, write_value| {
+	{ container: Cbor.Container.(w), state } = c
+	match slot_carry(w, state, 1, write_key) {
+		Ok({ writer: keyed, state: after }) => slot_carry(keyed, after, 0, write_value).map_ok(|x| { container: Cbor.Container.(x.writer), state: x.state })
+		Err(x) => Err(x)
+	}
+}
+
+## `add_field` with a value of the caller.
+add_field_carry : { container : Cbor.Container, state : s }, Str, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)
+add_field_carry = |c, name, write_value| {
+	{ container: Cbor.Container.(w), state } = c
+	{ out, st } = w
+	slot_carry({ out: put_text(out, name), st }, state, 1, write_value).map_ok(|x| { container: Cbor.Container.(x.writer), state: x.state })
+}
+
+## `slot` with a value of the caller: the same checks.
+slot_carry : Cbor.Writer, s, U64, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ writer : Cbor.Writer, state : s }, err)
+slot_carry = |w, state, used, write_value| {
+	{ out, st } = w
+	bad = st.bad or st.owe or st.left < used
+	left = if (st.left < used) 0 else st.left - used
+	run_carry({ writer: { out, st: { ..st, left, owe: Bool.True, bad } }, state }, write_value)
+}
+
+## Only the call of `write_value`: see `slot`.
+run_carry : { writer : Cbor.Writer, state : s }, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ writer : Cbor.Writer, state : s }, err)
+run_carry = |inner, write_value| write_value(inner)
+
+## `camel_collision` with a value of the caller: the dry run gets `state`, and gives it back with no change.
+camel_collision_carry : ({ container : Cbor.Container, state : s }, ({ container : Cbor.Container, state : s }, Str, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)), s -> Bool
+camel_collision_carry = |write_fields, state| {
+	empty = { out: [], st: { left: 0, owe: Bool.False, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel, sorted: Bool.False } }
+	keys = write_fields({ container: Cbor.Container.(empty), state }, |{ container: Cbor.Container.({ out, st }), state: s }, name, _| Ok({ container: Cbor.Container.({ out: put_text(out, name), st }), state: s }))
+	match keys {
+		Ok({ container: Cbor.Container.({ out, .. }), .. }) => text_duplicate(out)
+		Err(_) => Bool.False
+	}
+}
+
+## The end of a level: back to the level around it, with the checks. `nest` and `nest_carry` call it.
+leave : Cbor.Writer, U64, U64, U64, U64, [Full, Partial] -> Cbor.Writer
+leave = |w, count, id, left, level, need| {
+	{ out: o, st: d } = w
+	# A list with no item: its head is still to write.
+	pending = d.list == Pending(count)
+	done = if (pending) put_head(o, 4, count) else o
+	# The writer of this level, the last place with its item, and with `Full` each place opened.
+	ok = d.level == id and !d.owe and (need == Partial or d.left == 0)
+	{ out: done, st: { ..d, left, level, owe: Bool.False, list: Plain, bad: d.bad or !ok } }
 }
 
 ## One value of a list, a tuple or a tag: exactly one item.
@@ -2449,7 +2592,7 @@ low_zero = |x, n| x.bitwise_and((1.U64).shl_wrap(n) - 1) == 0
 ## no value is written, so it costs O(fields) for each record, with a sort.
 camel_collision : (Cbor.Container, (Cbor.Container, Str, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Bool
 camel_collision = |write_fields| {
-	empty = { out: [], st: { left: 0, owe: Bool.False, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel } }
+	empty = { out: [], st: { left: 0, owe: Bool.False, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel, sorted: Bool.False } }
 	keys = write_fields(Cbor.Container.(empty), |Cbor.Container.({ out, st }), name, _| Ok(Cbor.Container.({ out: put_text(out, name), st })))
 	match keys {
 		Ok(Cbor.Container.({ out, .. })) => text_duplicate(out)
@@ -2483,8 +2626,22 @@ head_size : U64 -> U64
 head_size = |n| if (n < 24) 1 else if (n < 0x100) 2 else if (n < 0x10000) 3 else if (n < 0x100000000) 5 else 9
 
 ## A writer for one item at the root.
-new_writer : [Snake, Camel] -> Cbor.Writer
-new_writer = |fields| { out: List.with_capacity(256), st: { left: 0, owe: Bool.True, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields } }
+new_writer : [Snake, Camel], Bool -> Cbor.Writer
+new_writer = |fields, sorted| { out: List.with_capacity(256), st: { left: 0, owe: Bool.True, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields, sorted } }
+
+## The bytes of a writer, with the checks of `encode_with`.
+finish_writer : Cbor.Writer -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])
+finish_writer = |w| {
+	if !counts_match(w) {
+		return Err(CountMismatch)
+	}
+	if w.st.dup {
+		return Err(DuplicateMapKey)
+	}
+	sorted = w.st.sorted
+	out = finish_output(w)
+	if (sorted) sort_maps(out).map_err(|DuplicateMapKey| DuplicateMapKey) else Ok(out)
+}
 
 ## The writer is the root writer, it wrote exactly one item, and each level got its count.
 counts_match : Cbor.Writer -> Bool
