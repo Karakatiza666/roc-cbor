@@ -1,8 +1,9 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.1/GDoZFRDnzMRiVk9nE8wdWn52btGsM1GhcY9VDKqy9f1Y.tar.zst",
 	pkg: "../src/main.roc",
 }
 
+import fuzz.Arbitrary
 import fuzz.Fuzz
 import pkg.Cbor
 
@@ -28,7 +29,7 @@ import pkg.Cbor
 Errs : [InvalidCbor(U64), TooLarge(U64), NotStreamable, MissingRequiredField(Str)]
 
 ## The errors of ByteChunks and TextChunks.
-ChunkErrs : [InvalidCbor(U64)]
+ChunkErrs : Cbor.Error
 
 ## The properties that run: all of them. A check of the target against a planted bug turns the others off.
 run : { p1 : Bool, p2 : Bool, p3 : Bool }
@@ -135,7 +136,7 @@ splits = |bytes, seed| {
 
 ## The items that `start` gives with `chunks` one at a time (`push`), then `finish`: the items, or the error. The loop
 ## is bounded by the chunks; more than `step_limit` values is a crash.
-stream_items : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+stream_items : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Cbor.Error)]
 stream_items = |start, chunks| {
 	var $d = start
 	var $values = []
@@ -151,12 +152,13 @@ stream_items = |start, chunks| {
 	match $d.finish() {
 		Ok(_) => Ok($values)
 		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
+		Err(MissingRequiredField(f)) => Err(MissingRequiredField(f))
 		Err(TooLarge(p)) => Err(TooLarge(p))
 	}
 }
 
 ## The entries that `start` gives with `chunks`, then `finish`.
-stream_entries : Cbor.Entries, List(List(U8)) -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+stream_entries : Cbor.Entries, List(List(U8)) -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Cbor.Error), k.Cbor.Encodable([]), v.Cbor.Parseable(Cbor.Error)]
 stream_entries = |start, chunks| {
 	var $d = start
 	var $entries = []
@@ -172,6 +174,7 @@ stream_entries = |start, chunks| {
 	match $d.finish() {
 		Ok(_) => Ok($entries)
 		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
+		Err(MissingRequiredField(f)) => Err(MissingRequiredField(f))
 		Err(TooLarge(p)) => Err(TooLarge(p))
 		Err(NotStreamable) => Err(NotStreamable)
 	}
@@ -345,7 +348,7 @@ walk_value = |bytes, at, set, depth, count| {
 }
 
 ## The typed item from `start` to `end`, with the positions in all of `bytes`.
-typed_at : List(U8), U64, U64, OptSet, U64, U64 -> Try(a, Errs) where [a.Cbor.Parseable(Errs)]
+typed_at : List(U8), U64, U64, OptSet, U64, U64 -> Try(a, Errs) where [a.Cbor.Parseable(Cbor.Error)]
 typed_at = |bytes, start, end, set, depth, count| {
 	r : Try({ value : a, rest : List(U8) }, Errs)
 	r = Cbor.parse_prefix_with(bytes.sublist({ start, len: end - start }), item_options(set, depth, count))
@@ -361,7 +364,7 @@ after_root : List(U8), U64, b -> Try(b, Errs)
 after_root = |bytes, at, value| if (at < bytes.len()) Err(InvalidCbor(at)) else Ok(value)
 
 ## The model of `Items.array`: the root head, then parse_prefix_with for each item.
-array_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+array_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Cbor.Error)]
 array_model = |bytes, set| {
 	root = root_model(bytes, set, 4) ? |p| InvalidCbor(p)
 	var $at = root.at
@@ -392,7 +395,7 @@ array_model = |bytes, set| {
 }
 
 ## The model of `Items.sequence` and `parse_sequence_with`: parse_prefix_with for each root item.
-sequence_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+sequence_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Cbor.Error)]
 sequence_model = |bytes, set| {
 	var $at = 0
 	var $values = []
@@ -424,7 +427,7 @@ before = |x, y| {
 Span : { key : U64, value : U64, end : U64, count : U64 }
 
 ## The typed key and value of an entry. The key reads only in the form that `Cbor.encode` writes for it.
-typed_entry : List(U8), Span, Cbor.Value, OptSet, U64 -> Try((k, v), Errs) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+typed_entry : List(U8), Span, Cbor.Value, OptSet, U64 -> Try((k, v), Errs) where [k.Cbor.Parseable(Cbor.Error), k.Cbor.Encodable([]), v.Cbor.Parseable(Cbor.Error)]
 typed_entry = |bytes, span, key_value, set, depth| {
 	key : k
 	key = typed_at(bytes, span.key, span.value, set, depth, span.count)?
@@ -439,7 +442,7 @@ typed_entry = |bytes, span, key_value, set, depth| {
 ## The model of `Entries.map`: the root head, then for each entry the walk of its key, the order and the duplicates of
 ## the Cbor.Value of the key (the encode bytes of `key_order: Sorted`, or the encode bytes for `Any`), the walk of its
 ## value, and the typed key and value. With `Sorted` and `Last`, an entry waits for a greater key or the end.
-entries_model : List(U8), OptSet -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+entries_model : List(U8), OptSet -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Cbor.Error), k.Cbor.Encodable([]), v.Cbor.Parseable(Cbor.Error)]
 entries_model = |bytes, set| {
 	sorted = set.key_order == Sorted
 	if set.duplicate_keys == Last and !sorted {
@@ -547,7 +550,7 @@ p1 = |name, whole, others|
 	}
 
 ## P1, P2 and P3 for `Items.array` and `Items.sequence` with items of type `a`. `read` is `parse_with` of a `List(a)`.
-check_items : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> {} where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+check_items : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> {} where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 check_items = |name, bytes, chunkings, set, read| {
 	options = to_options(set)
 	got : Try(List(a), Errs)
@@ -589,7 +592,7 @@ check_items = |name, bytes, chunkings, set, read| {
 }
 
 ## P1, P2 and P3 for `Entries.map` with keys `k` and values `v`. `read` is `parse_with` of a `Dict(k, v)`.
-check_entries : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(Dict(k, v), Errs)) -> {} where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, v.is_eq : v, v -> Bool]
+check_entries : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(Dict(k, v), Errs)) -> {} where [k.Cbor.Parseable(Cbor.Error), k.Cbor.Encodable([]), v.Cbor.Parseable(Cbor.Error), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, v.is_eq : v, v -> Bool]
 check_entries = |name, bytes, chunkings, set, read| {
 	options = to_options(set)
 	got : Try(List((k, v)), Errs)
@@ -771,9 +774,29 @@ test! = |input| {
 input : Fuzz.Generator({ seed : U64, bytes : List(U8) })
 input = Fuzz.map2(Fuzz.u64, Fuzz.raw_bytes, |seed, bytes| { seed, bytes })
 
+## The property's value, from the input bytes: the generator reads them as its entropy, as roc-fuzz's own
+## typed inputs do. The value type holds `Cbor` encoders, so it cannot have roc-fuzz's derived input format.
+input_of : List(U8) -> { seed : U64, bytes : List(U8) }
+input_of = |bytes| (input)(Arbitrary.new(bytes)).value
+
+## An example input: the bytes 0 to 255, in order.
+ramp : List(U8)
+ramp = {
+	var $out = []
+	for n in 0..<256 {
+		$out = $out.append(n.to_u8_wrap())
+	}
+	$out
+}
+
 target = Fuzz.target_with!({
 	name: "stream",
-	generator: input,
-	test!,
-	show: |g| Str.inspect(g),
+	examples: [
+		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "short", revision: "1", make: || [0x01, 0x82, 0x18, 0x2a, 0xa1, 0x61, 0x61, 0x00] }),
+		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
+	],
+	generator: Fuzz.raw_bytes,
+	test!: |bytes| test!(input_of(bytes)),
+	show: |bytes| Str.inspect(input_of(bytes)),
 })

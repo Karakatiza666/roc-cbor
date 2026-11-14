@@ -29,7 +29,7 @@ hex = |s|
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		bytes = Cbor.parse_bytes(encoding, tag.rest)?
@@ -48,7 +48,7 @@ Uuid := List(U8).{
 Instant := { secs : I64, nanos : U32 }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Instant, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Instant, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 12 {
@@ -68,7 +68,7 @@ Instant := { secs : I64, nanos : U32 }.{
 Point := { x : F64, y : F64 }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Point, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Point, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 88 {
@@ -84,7 +84,7 @@ Point := { x : F64, y : F64 }.{
 Link := { table : Str, key : Cbor.Value }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Link, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Link, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 8 {
@@ -103,7 +103,7 @@ Link := { table : Str, key : Cbor.Value }.{
 Cell := [Number(I64), Word(Str), When(Instant), Nothing].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {
@@ -128,12 +128,14 @@ Cell := [Number(I64), Word(Str), When(Instant), Nothing].{
 uuid_bytes : List(U8)
 uuid_bytes = hex("d8255000112233445566778899aabbccddeeff")
 
+## The tag 37 and a byte string of 16 bytes (d8 25 50 00..ff) reads as a Uuid of those bytes.
 expect {
 	r : Try(Uuid, _)
 	r = Cbor.parse(uuid_bytes)
 	r == Ok(Uuid.(hex("00112233445566778899aabbccddeeff")))
 }
 
+## A Uuid writes as the tag 37 (d8 25) and a byte string of 16 bytes (50 00..ff).
 expect Cbor.encode(Uuid.(hex("00112233445566778899aabbccddeeff"))) == uuid_bytes
 
 ## Another tag, the item with no tag, and a short byte string are errors at the tag.
@@ -143,12 +145,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A byte string of 16 bytes with no tag (50 00..ff) is an error at byte 0.
 expect {
 	r : Try(Uuid, _)
 	r = Cbor.parse(hex("5000112233445566778899aabbccddeeff"))
 	r == Err(InvalidCbor(0))
 }
 
+## The tag 37 and a byte string of 1 byte (d8 25 41 00) is an error at byte 0.
 expect {
 	r : Try(Uuid, _)
 	r = Cbor.parse(hex("d8254100"))
@@ -162,12 +166,14 @@ expect {
 	r == Ok([Instant.{ secs: 1761700000, nanos: 500000000 }, Instant.{ secs: 1, nanos: 0 }])
 }
 
+## The same list with no option: the padded tag head (db 00..0c) is an error at byte 13.
 expect {
 	r : Try(List(Instant), _)
 	r = Cbor.parse(hex("82cc821a690168a01a1dcd6500db000000000000000c820100"))
 	r == Err(InvalidCbor(13))
 }
 
+## An Instant of 1761700000 s and 500000000 ns writes as cc 82 1a 690168a0 1a 1dcd6500.
 expect Cbor.encode(Instant.{ secs: 1761700000, nanos: 500000000 }) == hex("cc821a690168a01a1dcd6500")
 
 ## Round trip of a record with a field of each type.
@@ -231,12 +237,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A tag 8 (c8) in a list of Cell is an error at the tag, byte 2.
 expect {
 	r : Try(List(Cell), _)
 	r = Cbor.parse(hex("8201c80102"))
 	r == Err(InvalidCbor(2))
 }
 
+## An empty map (a0) is not a Cell: an error at byte 0.
 expect {
 	r : Try(Cell, _)
 	r = Cbor.parse(hex("a0"))
@@ -247,7 +255,7 @@ expect {
 Kinds := List(Cbor.Kind).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Kinds, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Kinds, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		start = Cbor.parse_list_start(encoding, state)?
 		match start {
@@ -267,6 +275,7 @@ Kinds := List(Cbor.Kind).{
 	}
 }
 
+## peek gives the kind of each of 13 items: Int, Int, Bytes, Text, Array, Map, Tag(1), Bool, Bool, Null, Undefined, Simple(16), Simple(32).
 expect {
 	r : Try(Kinds, _)
 	r = Cbor.parse(hex("8d00204161617780a0c100f4f5f6f7f0f820"))
@@ -276,6 +285,7 @@ expect {
 	}
 }
 
+## peek gives Float for an f16, an f32 and an f64.
 expect {
 	r : Try(Kinds, _)
 	r = Cbor.parse(hex("83f93e00fa3fc00000fb3ff8000000000000"))
@@ -292,18 +302,21 @@ expect {
 	r == Err(InvalidCbor(1))
 }
 
+## A reserved head (1c) in an array is an error at byte 1.
 expect {
 	r : Try(Kinds, _)
 	r = Cbor.parse(hex("811c"))
 	r == Err(InvalidCbor(1))
 }
 
+## A simple value below 32 in two bytes (f8 1f) in an array is an error at byte 1.
 expect {
 	r : Try(Kinds, _)
 	r = Cbor.parse(hex("81f81f"))
 	r == Err(InvalidCbor(1))
 }
 
+## A break (ff) in an array is an error at byte 1.
 expect {
 	r : Try(Kinds, _)
 	r = Cbor.parse(hex("81ff"))
@@ -320,7 +333,7 @@ vmap = |pairs|
 		Err(_) => crash "a duplicate key in a test map"
 	}
 
-value_of : Str -> Try(Cbor.Value, [InvalidCbor(U64)])
+value_of : Str -> Try(Cbor.Value, Cbor.Error)
 value_of = |h| Cbor.parse(hex(h))
 
 ## Each variant reads, and writes back to the same bytes.
@@ -351,13 +364,23 @@ expect {
 
 ## f16, f32 and f64 read as a Float, and write in the shortest form with the same value.
 expect value_of("f93e00") == Ok(Cbor.Value.Float(1.5))
+
+## An f32 (fa 47c35000) reads as Float(100000.0).
 expect value_of("fa47c35000") == Ok(Cbor.Value.Float(100000.0))
+
+## An f64 (fb 3ff8000000000000) reads as Float(1.5).
 expect value_of("fb3ff8000000000000") == Ok(Cbor.Value.Float(1.5))
+
+## Float(1.5) writes as the f16 f9 3e00.
 expect Cbor.encode(Cbor.Value.Float(1.5)) == hex("f93e00")
+
+## Float(100000.0) writes as the f32 fa 47c35000.
 expect Cbor.encode(Cbor.Value.Float(100000.0)) == hex("fa47c35000")
 
 ## A tag of a tag stays. A map with a key that is there two times is an error at the second key (`duplicate_keys`).
 expect value_of("d820d8206161") == Ok(Cbor.Value.Tag(32, Cbor.Value.Tag(32, Cbor.Value.Text("a"))))
+
+## The map {"a": 1, "a": 2} is an error at the second key, byte 4.
 expect value_of("a2616101616102") == Err(InvalidCbor(4))
 
 ## Nested arrays and maps close in the right order.
@@ -368,11 +391,17 @@ expect {
 
 ## A bignum (tag 2 or 3) reads as a Tag. Int holds -2^64 to 2^64 - 1 only (tests/value.roc).
 expect value_of("c249010000000000000000") == Ok(Cbor.Value.Tag(2, Cbor.Value.Bytes([1, 0, 0, 0, 0, 0, 0, 0, 0])))
+
+## Simple(19) writes as the one byte f3.
 expect Cbor.encode(Cbor.Value.Simple(19)) == [0xf3]
 
 ## Equal when the bytes are equal.
 expect Cbor.Value.Int(1) != Cbor.Value.Float(1.0)
+
+## Float(0.0) and Float(-0.0) are not equal.
 expect Cbor.Value.Float(0.0) != Cbor.Value.Float(-0.0)
+
+## Float(NaN) is equal to Float(NaN).
 expect Cbor.Value.Float(F64.nan) == Cbor.Value.Float(F64.nan)
 
 ## A key of a Dict and an item of a Set.
@@ -383,19 +412,38 @@ expect {
 
 ## Not well formed or not in the profile: an error at the item.
 expect value_of("") == Err(InvalidCbor(0))
+
+## An indefinite array (9f 01 ff) is an error at byte 0.
 expect value_of("9f01ff") == Err(InvalidCbor(0))
+
+## An array of 2 with one item (82 01) is an error at the array, byte 0.
 expect value_of("8201") == Err(InvalidCbor(0))
+
+## An inner array with no item (82 01 81 81) is an error at byte 3.
 expect value_of("82018181") == Err(InvalidCbor(3))
+
+## An indefinite byte string (5f) in an array is an error at byte 2.
 expect value_of("82015f") == Err(InvalidCbor(2))
+
+## A simple value below 32 in two bytes (f8 18) is an error at byte 0.
 expect value_of("f818") == Err(InvalidCbor(0))
 # A tag with no item: the error is at the open tag (one truncation rule).
+## A tag with no item (c6) is an error at byte 0.
 expect value_of("c6") == Err(InvalidCbor(0))
+
+## Text that is not UTF-8 (62 61 ff) is an error at byte 0.
 expect value_of("6261ff") == Err(InvalidCbor(0))
+
+## A byte after the item (00 01) is an error at byte 1.
 expect value_of("0001") == Err(InvalidCbor(1))
 
 ## A bad count is an error at the head, not a large list.
 expect value_of("9bffffffffffffffff") == Err(InvalidCbor(0))
+
+## A map count far larger than the input (bb 7fff..ff) is an error at byte 0.
 expect value_of("bb7fffffffffffffff") == Err(InvalidCbor(0))
+
+## A map of 3 pairs with only 3 items (a3 01 02 03) is an error at byte 0.
 expect value_of("a3010203") == Err(InvalidCbor(0))
 
 ## 512 nested arrays and 512 nested tags (the depth limit) read and write back. With 100,000, the error is at the 513th head.
@@ -408,6 +456,7 @@ expect {
 	}
 }
 
+## 512 nested tags (c1) read and write back to the same bytes.
 expect {
 	deep = List.repeat(0xc1, 512).append(0x00)
 	r = value_of_bytes(deep)
@@ -417,10 +466,13 @@ expect {
 	}
 }
 
+## 100,000 nested arrays are an error at the 513th head, byte 512.
 expect value_of_bytes(List.repeat(0x81, 100000).append(0x00)) == Err(InvalidCbor(512))
+
+## 100,000 nested tags are an error at the 513th head, byte 512.
 expect value_of_bytes(List.repeat(0xc1, 100000).append(0x00)) == Err(InvalidCbor(512))
 
-value_of_bytes : List(U8) -> Try(Cbor.Value, [InvalidCbor(U64)])
+value_of_bytes : List(U8) -> Try(Cbor.Value, Cbor.Error)
 value_of_bytes = |bytes| Cbor.parse(bytes)
 
 ## A Cbor.Value field of a record: a null value is `Null`. With `NullAsAbsent` it is no key, as for any field.
@@ -430,12 +482,14 @@ expect {
 	r == Ok({ v: Cbor.Value.Tag(2, Cbor.Value.Bytes([1])), w: Ok(Cbor.Value.Text("a")) })
 }
 
+## With no option, {"v": null} reads the Cbor.Value field as Null.
 expect {
 	r : Try({ v : Cbor.Value }, _)
 	r = Cbor.parse(hex("a16176f6"))
 	r == Ok({ v: Cbor.Value.Null })
 }
 
+## With NullAsAbsent, {"v": null} is no key: MissingRequiredField("v").
 expect {
 	r : Try({ v : Cbor.Value }, _)
 	r = Cbor.parse_with(hex("a16176f6"), { allow: [NullAsAbsent] })
@@ -454,6 +508,7 @@ expect {
 	r == Ok(Err(Null))
 }
 
+## In a list, [6(null), 1] reads as [Err(Null), Ok(1)].
 expect {
 	r : Try(List(Try(U64, [Null])), _)
 	r = Cbor.parse_with(hex("82c6f601"), tags6)
@@ -467,6 +522,7 @@ expect {
 	r == Ok({ name: "A", nick: Err(Null) })
 }
 
+## With NullAsAbsent and UndefinedAsNull: 6(null) is no key for an optional field, and 6(undefined) is Err(Missing).
 expect {
 	r : Try({ name : Str, nick ?: Str, note : Try(Str, [Missing]) }, _)
 	r = Cbor.parse_with(hex("a3646e616d656141646e69636bc6f6646e6f7465c6f7"), { ignore_tags: [6], allow: [NullAsAbsent, UndefinedAsNull] })
@@ -476,6 +532,7 @@ expect {
 	}
 }
 
+## With NullAsAbsent, 6(null) for a required Str field is MissingRequiredField("nick").
 expect {
 	r : Try({ name : Str, nick : Str }, _)
 	r = Cbor.parse_with(hex("a2646e616d656141646e69636bc6f6"), { ignore_tags: [6], allow: [NullAsAbsent] })
@@ -489,6 +546,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## With no option, {"nick": 6(null)} is an error at the tag, byte 6.
 expect {
 	r : Try({ nick ?: Str }, _)
 	r = Cbor.parse(hex("a1646e69636bc6f6"))
@@ -502,6 +560,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A tag 6 before an integer, text, an array, a float, bytes, a tuple and a Roc tag reads the item.
 expect {
 	r : Try({ a : U64, b : Str, c : List(Bool), d : F64, e : List(U8), f : (U8, U8), g : [X, Y(U8)] }, _)
 	r = Cbor.parse_with(hex("a76161c6016162c661786163c681c6f56164c6fb3ff80000000000006165c641ff6166c682c601c6026167c6a16159c607"), { ignore_tags: [6] })
@@ -529,6 +588,7 @@ expect {
 	r == Ok(Cbor.Value.Tag(6, Cbor.Value.Null))
 }
 
+## A Cell, which uses peek, sees the tag 6 of 6(null): an error at byte 0.
 expect {
 	r : Try(Cell, _)
 	r = Cbor.parse_with(hex("c6f6"), tags6)
@@ -544,28 +604,61 @@ expect {
 
 # Option dec_from_text
 
-dec_text : Str -> Try(Dec, [InvalidCbor(U64)])
+dec_text : Str -> Try(Dec, Cbor.Error)
 dec_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [DecFromText] })
 
+## DecFromText reads "12.50" as 12.5.
 expect dec_text("12.50") == Ok(12.5)
+
+## DecFromText reads "4E+1" as 40.
 expect dec_text("4E+1") == Ok(40)
+
+## DecFromText reads "4e1" as 40.
 expect dec_text("4e1") == Ok(40)
+
+## DecFromText reads "0" as 0.
 expect dec_text("0") == Ok(0)
+
+## DecFromText reads "-0" as 0.
 expect dec_text("-0") == Ok(0)
+
+## DecFromText reads "-1.25e-3" as -0.00125.
 expect dec_text("-1.25e-3") == Ok(-0.00125)
+
+## DecFromText reads "123456.789E-3" as 123.456789.
 expect dec_text("123456.789E-3") == Ok(123.456789)
+
+## DecFromText reads 18 fraction digits, "0.000000000000000001".
 expect dec_text("0.000000000000000001") == Ok(0.000000000000000001)
+
+## DecFromText reads "1." and 46 zeros as 1.
 expect dec_text("1.0000000000000000000000000000000000000000000000") == Ok(1)
+
+## DecFromText reads "170141183.460469231731687303715884105727E+12" as Dec.highest.
 expect dec_text("170141183.460469231731687303715884105727E+12") == Ok(Dec.highest)
+
+## DecFromText reads "-170141183460469231731.687303715884105728" as Dec.lowest.
 expect dec_text("-170141183460469231731.687303715884105728") == Ok(Dec.lowest)
+
+## DecFromText reads "0E+99999999999999999999" as 0.
 expect dec_text("0E+99999999999999999999") == Ok(0)
+
+## DecFromText reads "25E-1" as 2.5.
 expect dec_text("25E-1") == Ok(2.5)
 
 ## More than 18 fraction digits, out of range, or not in the number form of JSON: an error at the text.
 expect dec_text("0.0000000000000000001") == Err(InvalidCbor(0))
+
+## DecFromText: "170141183460469231732" is out of range, an error at byte 0.
 expect dec_text("170141183460469231732") == Err(InvalidCbor(0))
+
+## DecFromText: "1E+99999999999999999999" is out of range, an error at byte 0.
 expect dec_text("1E+99999999999999999999") == Err(InvalidCbor(0))
+
+## DecFromText: "1E-99999999999999999999" is an error at byte 0.
 expect dec_text("1E-99999999999999999999") == Err(InvalidCbor(0))
+
+## DecFromText: text not in the number form of JSON ("", "01", "+1", "1.", "NaN" and more) is an error at byte 0.
 expect ["", "-", "01", "+1", "1.", ".5", "1e", "1e+", " 1", "1 ", "1.5.5", "0x10", "1_000", "NaN", "Infinity", "1E5.5", "--1"].all(|s| dec_text(s) == Err(InvalidCbor(0)))
 
 ## With no option, text is an error, as before.

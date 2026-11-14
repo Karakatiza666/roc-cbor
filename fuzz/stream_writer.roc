@@ -1,8 +1,9 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.1/GDoZFRDnzMRiVk9nE8wdWn52btGsM1GhcY9VDKqy9f1Y.tar.zst",
 	pkg: "../src/main.roc",
 }
 
+import fuzz.Arbitrary
 import fuzz.Fuzz
 import pkg.Cbor
 
@@ -216,7 +217,7 @@ p4 = |vs, seed, sorted| {
 				if st.w.finish() != Ok({}) {
 					crash "P4: finish gives Err after one whole item"
 				}
-				back : Try(Cbor.Value, [InvalidCbor(U64)])
+				back : Try(Cbor.Value, Cbor.Error)
 				back = Cbor.parse_with(st.out, read_options(sorted, st.indefinite))
 				match back {
 					Ok(b) if same(b, v, sorted) => {}
@@ -226,7 +227,7 @@ p4 = |vs, seed, sorted| {
 			Err(_) => crash "P4: the writer refuses a valid step"
 		}
 		if sorted {
-			sorted_back : Try(Cbor.Value, [InvalidCbor(U64)])
+			sorted_back : Try(Cbor.Value, Cbor.Error)
 			sorted_back = Cbor.parse_with(sorted_key(v), { key_order: Sorted })
 			if sorted_back.map_ok(|b| same(b, v, sorted)) != Ok(Bool.True) {
 				crash "P4: encode_with key_order: Sorted does not read with key_order: Sorted"
@@ -245,7 +246,7 @@ p4 = |vs, seed, sorted| {
 	if $st.w.finish() != Ok({}) {
 		crash "P4: finish of a sequence gives Err"
 	}
-	back : Try(List(Cbor.Value), [InvalidCbor(U64)])
+	back : Try(List(Cbor.Value), Cbor.Error)
 	back = Cbor.parse_sequence_with($st.out, read_options(sorted, $st.indefinite))
 	ok =
 		match back {
@@ -334,11 +335,11 @@ p5 = |seed, sorted, sequence| {
 		read = { allow: [IndefiniteLength], key_order: if (sorted) Sorted else Any, duplicate_keys: if (sorted) Reject else First }
 		valid =
 			if sequence {
-				all : Try(List(Cbor.Value), [InvalidCbor(U64)])
+				all : Try(List(Cbor.Value), Cbor.Error)
 				all = Cbor.parse_sequence_with($st.out, read)
 				all.is_ok()
 			} else {
-				one : Try(Cbor.Value, [InvalidCbor(U64)])
+				one : Try(Cbor.Value, Cbor.Error)
 				one = Cbor.parse_with($st.out, read)
 				one.is_ok()
 			}
@@ -461,9 +462,29 @@ any_value = |depth|
 input : Fuzz.Generator({ seed : U64, values : List(Cbor.Value) })
 input = Fuzz.map2(Fuzz.u64, Fuzz.list(any_value(3), 4), |seed, values| { seed, values })
 
+## The property's value, from the input bytes: the generator reads them as its entropy, as roc-fuzz's own
+## typed inputs do. The value type holds `Cbor` encoders, so it cannot have roc-fuzz's derived input format.
+input_of : List(U8) -> { seed : U64, values : List(Cbor.Value) }
+input_of = |bytes| (input)(Arbitrary.new(bytes)).value
+
+## An example input: the bytes 0 to 255, in order.
+ramp : List(U8)
+ramp = {
+	var $out = []
+	for n in 0..<256 {
+		$out = $out.append(n.to_u8_wrap())
+	}
+	$out
+}
+
 target = Fuzz.target_with!({
 	name: "stream-writer",
-	generator: input,
-	test!,
-	show: |g| Str.inspect(g),
+	examples: [
+		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "short", revision: "1", make: || [0x01, 0x82, 0x18, 0x2a, 0xa1, 0x61, 0x61, 0x00] }),
+		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
+	],
+	generator: Fuzz.raw_bytes,
+	test!: |bytes| test!(input_of(bytes)),
+	show: |bytes| Str.inspect(input_of(bytes)),
 })

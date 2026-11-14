@@ -86,7 +86,7 @@ splits = |bytes| {
 # The push loops: the values of each `push` over the chunks, then the error of `push` or `finish`, as the adapter
 # gives them. Each loop is bounded by its chunks.
 
-push_items : Cbor.Items, List(List(U8)) -> List(Try(a, Errs)) where [a.Cbor.Parseable(Errs)]
+push_items : Cbor.Items, List(List(U8)) -> List(Try(a, Errs)) where [a.Cbor.Parseable(Cbor.Error)]
 push_items = |start, chunks| {
 	var $d = start
 	var $out = []
@@ -114,6 +114,9 @@ push_items = |start, chunks| {
 			Err(InvalidCbor(p)) => {
 				$out = $out.append(Err(InvalidCbor(p)))
 			}
+			Err(MissingRequiredField(f)) => {
+				$out = $out.append(Err(MissingRequiredField(f)))
+			}
 			Err(TooLarge(p)) => {
 				$out = $out.append(Err(TooLarge(p)))
 			}
@@ -122,7 +125,7 @@ push_items = |start, chunks| {
 	$out
 }
 
-push_entries : Cbor.Entries, List(List(U8)) -> List(Try((k, v), Errs)) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+push_entries : Cbor.Entries, List(List(U8)) -> List(Try((k, v), Errs)) where [k.Cbor.Parseable(Cbor.Error), k.Cbor.Encodable([]), v.Cbor.Parseable(Cbor.Error)]
 push_entries = |start, chunks| {
 	var $d = start
 	var $out = []
@@ -149,6 +152,9 @@ push_entries = |start, chunks| {
 			Ok(_) => {}
 			Err(InvalidCbor(p)) => {
 				$out = $out.append(Err(InvalidCbor(p)))
+			}
+			Err(MissingRequiredField(f)) => {
+				$out = $out.append(Err(MissingRequiredField(f)))
 			}
 			Err(TooLarge(p)) => {
 				$out = $out.append(Err(TooLarge(p)))
@@ -240,7 +246,7 @@ read_fail! = || Err(Poison)
 # The properties: each split gives the events of the push loop.
 
 ## `Items.array` (or `sequence`) with `from_stream` gives the events of `push_items` for each split of `bytes`.
-items_agree! : Cbor.Items, List(U8), List(Try(a, Errs)) => Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+items_agree! : Cbor.Items, List(U8), List(Try(a, Errs)) => Bool where [a.Cbor.Parseable(Cbor.Error), a.is_eq : a, a -> Bool]
 items_agree! = |start, bytes, want| {
 	var $all = push_items(start, [bytes]) == want
 	for chunks in splits(bytes) {
@@ -253,7 +259,7 @@ items_agree! = |start, bytes, want| {
 	$all
 }
 
-entries_agree! : Cbor.Entries, List(U8), List(Try((k, v), Errs)) => Bool where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs), k.is_eq : k, k -> Bool, v.is_eq : v, v -> Bool]
+entries_agree! : Cbor.Entries, List(U8), List(Try((k, v), Errs)) => Bool where [k.Cbor.Parseable(Cbor.Error), k.Cbor.Encodable([]), v.Cbor.Parseable(Cbor.Error), k.is_eq : k, k -> Bool, v.is_eq : v, v -> Bool]
 entries_agree! = |start, bytes, want| {
 	var $all = push_entries(start, [bytes]) == want
 	for chunks in splits(bytes) {

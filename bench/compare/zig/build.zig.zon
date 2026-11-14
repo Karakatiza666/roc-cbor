@@ -1,0 +1,13 @@
+.{
+    .name = .cbor_bench,
+    .version = "0.0.1",
+    .minimum_zig_version = "0.17.1",
+    .fingerprint = 0x84d1a3284a945825,
+    .paths = .{""},
+    .dependencies = .{
+        .zbor = .{
+            .url = "https://github.com/r4gus/zbor/archive/refs/tags/0.23.1.tar.gz",
+            .hash = "zbor-0.23.1-kr-CoL5pBABjWr4a34vmuD66VnkVWMdqSZU3fAp4TH9-",
+        },
+    },
+}

@@ -12,7 +12,7 @@ Id := U64.{
 	is_eq : _
 	encoder_for : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| {
 		inner = U64.parser_for(encoding)
 		|state| {
@@ -23,13 +23,12 @@ Id := U64.{
 }
 
 ## A function with Readable. It matches MissingRequiredField(field) and InvalidCbor(pos) in the generic code.
-read_text : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
+read_text : List(U8) -> Try(a, Str) where [a.Cbor.Readable]
 read_text = |bytes|
 	match Cbor.parse(bytes) {
 		Ok(v) => Ok(v)
 		Err(MissingRequiredField(field)) => Err("missing ${field}")
 		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
-		Err(_) => Err("other")
 	}
 
 ## A function with Writable.
@@ -37,7 +36,7 @@ write_all : List(a) -> List(List(U8)) where [a.Cbor.Writable]
 write_all = |items| items.map(|item| Cbor.encode(item))
 
 ## Readable and Writable in one function: the round trip of a value.
-round_trips : a -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Writable, a.Cbor.Readable(errs)]
+round_trips : a -> Bool where [a.is_eq : a, a -> Bool, a.Cbor.Writable, a.Cbor.Readable]
 round_trips = |value| {
 	back : Try(a, _)
 	back = Cbor.parse(Cbor.encode(value))
@@ -48,13 +47,14 @@ round_trips = |value| {
 }
 
 ## A function with Parseable, and a function with Readable that calls it.
-parseable_inner : List(U8) -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]
+parseable_inner : List(U8) -> Try(a, Cbor.Error) where [a.Cbor.Parseable(Cbor.Error)]
 parseable_inner = |bytes| Cbor.parse(bytes)
 
-via_parseable : List(U8) -> Try(a, [InvalidCbor(U64), MissingRequiredField(Str), ..errs]) where [a.Cbor.Readable(errs)]
+via_parseable : List(U8) -> Try(a, Cbor.Error) where [a.Cbor.Readable]
 via_parseable = |bytes| parseable_inner(bytes)
 
 # Readable works for a record (MissingRequiredField and InvalidCbor)
+## read_text on a Row: a full record reads, no name is "missing name", the integer 01 is "invalid at 0".
 expect {
 	ok : Try(Row, Str)
 	ok = read_text(Cbor.encode({ id: 7.U64, name: "a" }))
@@ -66,6 +66,7 @@ expect {
 }
 
 # Readable works for List(Row), List(I64), List(U8) and a closed custom parser
+## read_text on List(Row), List(I64), List(U8) and Id: each reads, a row with no name is "missing name", text for an Id is "invalid at 0".
 expect {
 	rows : Try(List(Row), Str)
 	rows = read_text(Cbor.encode([{ id: 1.U64, name: "a" }]))
@@ -83,6 +84,7 @@ expect {
 }
 
 # Writable works for a record, a list, a List(U8) and a custom type
+## write_all writes a record, [1, 2] as an array (82 01 02), a List(U8) as bytes (42 01 02) and Id 5 as 05.
 expect {
 	rows = write_all([{ id: 1.U64, name: "a" }])
 	nums = write_all([[1.I64, 2]])
@@ -92,9 +94,11 @@ expect {
 }
 
 # Writable and Readable in one function
+## round_trips is true for a record, a List(I64), a List(U8) and an Id.
 expect round_trips({ id: 7.U64, name: "a" }) and round_trips([1.I64, -2]) and round_trips([9.U8]) and round_trips(Id.(3))
 
 # a function with Readable calls a function with Parseable
+## via_parseable reads a full Row, and a Row with no name is Err(MissingRequiredField("name")).
 expect {
 	ok : Try(Row, _)
 	ok = via_parseable(Cbor.encode({ id: 7.U64, name: "a" }))

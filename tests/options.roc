@@ -39,12 +39,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## With BoolFromInt, [false, true, 0, 1] reads as [false, true, false, true].
 expect {
 	r : Try(List(Bool), _)
 	r = Cbor.parse_with([0x84, 0xf4, 0xf5, 0x00, 0x01], { allow: [BoolFromInt] })
 	r == Ok([Bool.False, Bool.True, Bool.False, Bool.True])
 }
 
+## A float 1.0 (f9 3c 00) as a Bool is an error with BoolFromInt or FloatToInt alone, and true with both.
 expect {
 	one : List(U8)
 	one = [0xf9, 0x3c, 0x00]
@@ -64,12 +66,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## With FloatToInt, -4.0 (f9 c4 00) and 100000.0 (fa 47c35000) read as the I64 values -4 and 100000.
 expect {
 	r : Try(List(I64), _)
 	r = Cbor.parse_with([0x82, 0xf9, 0xc4, 0x00, 0xfa, 0x47, 0xc3, 0x50, 0x00], { allow: [FloatToInt] })
 	r == Ok([-4, 100000])
 }
 
+## With FloatToInt, 1.5 (f9 3e 00) as a U64 is an error at byte 0.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with([0xf9, 0x3e, 0x00], { allow: [FloatToInt] })
@@ -78,6 +82,7 @@ expect {
 
 # IntFromText and DecFromText
 
+## "-12" reads as an I64 only with IntFromText, and "1.5" reads as a Dec only with DecFromText.
 expect {
 	a : Try(I64, _)
 	a = Cbor.parse(Cbor.encode("-12"))
@@ -99,12 +104,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## With UndefinedAsNull, undefined (f7) reads as Err(Null).
 expect {
 	r : Try(Try(U64, [Null]), _)
 	r = Cbor.parse_with([0xf7], { allow: [UndefinedAsNull] })
 	r == Ok(Err(Null))
 }
 
+## With UndefinedAsNull, undefined (f7) still reads as Cbor.Value.Undefined.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse_with([0xf7], { allow: [UndefinedAsNull] })
@@ -133,6 +140,7 @@ expect {
 	a == Err(InvalidCbor(0)) and b == Ok(1)
 }
 
+## {"a": 1, "z": [a byte string with a 2-byte head]} is an error at byte 7, and reads with PaddedNumbers.
 expect {
 	# {"a": 1, "z": [h'' with a 2 byte head]}
 	bytes = [0xa2, 0x61, 0x61, 0x01, 0x61, 0x7a, 0x81, 0x59, 0x00, 0x00]
@@ -143,6 +151,7 @@ expect {
 	a == Err(InvalidCbor(7)) and b == Ok({ a: 1 })
 }
 
+## The key "a" with a 1-byte length head (78 01 61) is an error at byte 1, and reads with PaddedNumbers.
 expect {
 	# {"a" with a 1 byte length head: 1}
 	bytes = [0xa1, 0x78, 0x01, 0x61, 0x01]
@@ -201,6 +210,7 @@ expect {
 	)
 }
 
+## [1, null] reads as a List(Try(U8, [Null])); [1, 2] is an error at byte 0 for it; [1, null] is an error at byte 2 for a List(U8).
 expect {
 	a : Try(List(Try(U8, [Null])), _)
 	a = Cbor.parse([0x82, 0x01, 0xf6])
@@ -215,7 +225,7 @@ expect {
 Byte := U8.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Byte, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Byte, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		b = Cbor.parse_u8(encoding, state)?
 		Ok({ value: Byte.(b.value), rest: b.rest })
@@ -225,6 +235,7 @@ Byte := U8.{
 	encoder_for = |_| |Byte.(b), w| Cbor.encode_u8(b, w)
 }
 
+## A List(Byte) of 1 and 255 writes as the byte string 42 01 ff. It and an empty list read back.
 expect {
 	v : List(Byte)
 	v = [Byte.(1), Byte.(255)]
@@ -278,6 +289,7 @@ expect {
 dup_ab : List(U8)
 dup_ab = [0xa3, 0x61, 0x61, 0x01, 0x61, 0x62, 0x02, 0x61, 0x61, 0x03]
 
+## With no option, an error at byte 7. First reads {a: 1, b: 2}, Last reads {a: 3, b: 2}.
 expect {
 	a : Try({ a : U64, b : U64 }, _)
 	a = Cbor.parse(dup_ab)
@@ -320,6 +332,7 @@ expect {
 
 # duplicate_keys: a Dict
 
+## {"a": 1, "b": 2, "a": 3} as a Dict: an error at byte 7, "a" is 1 with First and 3 with Last.
 expect {
 	a : Try(Dict(Str, U64), _)
 	a = Cbor.parse(dup_ab)
@@ -342,6 +355,7 @@ expect {
 		and b == Ok(Dict.from_list([("x", Dict.empty()), ("y", Dict.from_list([("b", 3)]))]))
 }
 
+## [{"a": 1, "a": 2}, {"b": 3}] with First reads as [{"a": 1}, {"b": 3}].
 expect {
 	# [{"a": 1, "a": 2}, {"b": 3}]
 	bytes = [0x82, 0xa2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02, 0xa1, 0x61, 0x62, 0x03]
@@ -358,12 +372,14 @@ Pay : [Card({ kind : Str, last4 : Str }), Evil({ kind : Str, last4 : Str }), Che
 f4 : List(U8)
 f4 = hex("a3646b696e646443617264646b696e64644576696c656c617374346131")
 
+## With no duplicate_keys option, the second "kind" key is an error at byte 11.
 expect {
 	r : Try(Pay, _)
 	r = Cbor.parse_with(f4, { unions: kind })
 	r == Err(InvalidCbor(11))
 }
 
+## First reads Card and Last reads Evil, each with last4 "1".
 expect {
 	a : Try(Pay, _)
 	a = Cbor.parse_with(f4, { unions: kind, duplicate_keys: First })
@@ -376,6 +392,7 @@ expect {
 check_twice : List(U8)
 check_twice = hex("a3646b696e6465436865636b6576616c7565016576616c756502")
 
+## With no option, an error at the second "value" key, byte 19. First reads Check(1), Last reads Check(2).
 expect {
 	a : Try(Pay, _)
 	a = Cbor.parse_with(check_twice, { unions: kind })
@@ -396,6 +413,7 @@ vmap = |pairs|
 		Err(_) => crash "a duplicate key in a test map"
 	}
 
+## A Cbor.Value map {"a": 1, "a": 2}: an error at byte 4, {"a": 1} with First, {"a": 2} with Last.
 expect {
 	bytes = [0xa2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02]
 	a : Try(Cbor.Value, _)
@@ -496,6 +514,7 @@ expect {
 	r == Err(InvalidCbor(8))
 }
 
+## With max_depth 2, [[1]] reads and [[[1]]] is an error at the third array, byte 2.
 expect {
 	a : Try(List(List(U64)), _)
 	a = Cbor.parse_with([0x81, 0x81, 0x01], { max_depth: 2 })
@@ -513,6 +532,7 @@ expect {
 	r == Err(InvalidCbor(1))
 }
 
+## With no option (snake keys), {"a1": 1, "a_1": 2} reads as a1 = 1 and a_1 = 2.
 expect {
 	bytes = [0xa2, 0x62, 0x61, 0x31, 0x01, 0x63, 0x61, 0x5f, 0x31, 0x02]
 	r : Try({ a_1 : U64, a1 : U64 }, _)
@@ -582,6 +602,7 @@ expect {
 
 # Cbor.sql_rows
 
+## Cbor.sql_rows is [BoolFromInt, FloatToInt, NullAsAbsent, UndefinedAsNull, BytesFromArray].
 expect Cbor.sql_rows == [BoolFromInt, FloatToInt, NullAsAbsent, UndefinedAsNull, BytesFromArray]
 
 ## IntFromText also reads a 128-bit integer type.
@@ -591,6 +612,7 @@ expect {
 	r == Ok(123)
 }
 
+## IntFromText reads "-123" as an I128.
 expect {
 	r : Try(I128, _)
 	r = Cbor.parse_with([0x64, '-', '1', '2', '3'], { allow: [IntFromText] })
@@ -598,44 +620,78 @@ expect {
 }
 
 ## The text `s` read as a U128 with IntFromText.
-u128_text : Str -> Try(U128, [InvalidCbor(U64)])
+u128_text : Str -> Try(U128, Cbor.Error)
 u128_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [IntFromText] })
 
 ## The text `s` read as an I128 with IntFromText.
-i128_text : Str -> Try(I128, [InvalidCbor(U64)])
+i128_text : Str -> Try(I128, Cbor.Error)
 i128_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [IntFromText] })
 
 ## The text `s` read as a U64 with IntFromText.
-u64_text : Str -> Try(U64, [InvalidCbor(U64)])
+u64_text : Str -> Try(U64, Cbor.Error)
 u64_text = |s| Cbor.parse_with(Cbor.encode(s), { allow: [IntFromText] })
 
 ## IntFromText reads each U128: 2^64 and the maximum. The maximum + 1 (39 digits) and 40 digits are errors, with no wrap.
 expect u128_text("18446744073709551616") == Ok(18446744073709551616)
+
+## IntFromText reads the U128 maximum.
 expect u128_text("340282366920938463463374607431768211455") == Ok(340282366920938463463374607431768211455)
+
+## IntFromText: the U128 maximum + 1 is an error at byte 0.
 expect u128_text("340282366920938463463374607431768211456") == Err(InvalidCbor(0))
+
+## IntFromText: 39 nines is above the U128 maximum, an error at byte 0.
 expect u128_text("999999999999999999999999999999999999999") == Err(InvalidCbor(0))
+
+## IntFromText: a U128 text of 40 digits is an error at byte 0.
 expect u128_text("1000000000000000000000000000000000000000") == Err(InvalidCbor(0))
+
+## IntFromText: "-1" is an error at byte 0 for a U128.
 expect u128_text("-1") == Err(InvalidCbor(0))
 
 ## IntFromText reads each I128: the minimum and the maximum. One past each end is an error.
 expect i128_text("-170141183460469231731687303715884105728") == Ok(I128.lowest)
+
+## IntFromText reads the I128 maximum.
 expect i128_text("170141183460469231731687303715884105727") == Ok(I128.highest)
+
+## IntFromText: the I128 minimum - 1 is an error at byte 0.
 expect i128_text("-170141183460469231731687303715884105729") == Err(InvalidCbor(0))
+
+## IntFromText: the I128 maximum + 1 is an error at byte 0.
 expect i128_text("170141183460469231731687303715884105728") == Err(InvalidCbor(0))
+
+## IntFromText reads "-18446744073709551617", below -2^64, as an I128.
 expect i128_text("-18446744073709551617") == Ok(-18446744073709551617)
+
+## IntFromText: "-" and 40 digits is an error at byte 0 for an I128.
 expect i128_text("-1000000000000000000000000000000000000000") == Err(InvalidCbor(0))
 
 ## The text must be canonical: no leading zero, no `-0`, no `+`, no space. 0 reads.
 expect u128_text("0") == Ok(0) and i128_text("0") == Ok(0)
+
+## A leading zero ("0123", "-0123") is an error at byte 0.
 expect u128_text("0123") == Err(InvalidCbor(0)) and i128_text("-0123") == Err(InvalidCbor(0))
+
+## "-0" is an error at byte 0 for an I128 and a U128.
 expect i128_text("-0") == Err(InvalidCbor(0)) and u128_text("-0") == Err(InvalidCbor(0))
+
+## A "+" sign ("+1") is an error at byte 0 for a U128 and an I128.
 expect u128_text("+1") == Err(InvalidCbor(0)) and i128_text("+1") == Err(InvalidCbor(0))
+
+## A space before or after the digits (" 1", "1 ") is an error at byte 0.
 expect u128_text(" 1") == Err(InvalidCbor(0)) and i128_text("1 ") == Err(InvalidCbor(0))
+
+## Empty text and "-" alone are errors at byte 0.
 expect u128_text("") == Err(InvalidCbor(0)) and i128_text("-") == Err(InvalidCbor(0))
 
 ## A smaller type keeps its range: U64 text above the U64 maximum is an error.
 expect u64_text("18446744073709551615") == Ok(18446744073709551615)
+
+## U64 text of the U64 maximum + 1 is an error at byte 0.
 expect u64_text("18446744073709551616") == Err(InvalidCbor(0))
+
+## U64 text of the U128 maximum is an error at byte 0.
 expect u64_text("340282366920938463463374607431768211455") == Err(InvalidCbor(0))
 
 # BytesFromBase64
@@ -664,22 +720,34 @@ to_base64 = |bytes| {
 }
 
 ## The text `s` read with BytesFromBase64 as a Cbor.Bytes and as a List(U8). The two must agree.
-from_text : Str -> Try(List(U8), [InvalidCbor(U64)])
+from_text : Str -> Try(List(U8), Cbor.Error)
 from_text = |s| {
-	a : Try(Cbor.Bytes, [InvalidCbor(U64)])
+	a : Try(Cbor.Bytes, Cbor.Error)
 	a = Cbor.parse_with(Cbor.encode(s), b64)
-	l : Try(List(U8), [InvalidCbor(U64)])
+	l : Try(List(U8), Cbor.Error)
 	l = Cbor.parse_with(Cbor.encode(s), b64)
 	if (a.map_ok(|x| x.to_list()) == l) l else Err(InvalidCbor(999))
 }
 
 ## The test vectors of RFC 4648 10.
 expect from_text("") == Ok([])
+
+## Base64 "Zg==" reads as "f".
 expect from_text("Zg==") == Ok("f".to_utf8())
+
+## Base64 "Zm8=" reads as "fo".
 expect from_text("Zm8=") == Ok("fo".to_utf8())
+
+## Base64 "Zm9v" reads as "foo".
 expect from_text("Zm9v") == Ok("foo".to_utf8())
+
+## Base64 "Zm9vYg==" reads as "foob".
 expect from_text("Zm9vYg==") == Ok("foob".to_utf8())
+
+## Base64 "Zm9vYmE=" reads as "fooba".
 expect from_text("Zm9vYmE=") == Ok("fooba".to_utf8())
+
+## Base64 "Zm9vYmFy" reads as "foobar".
 expect from_text("Zm9vYmFy") == Ok("foobar".to_utf8())
 
 ## Each byte value reads back, with each length of the last group (0, 1 and 2 bytes of padding).
@@ -694,18 +762,32 @@ expect {
 
 ## Each text that is not base64 is an error at the text: padding missing, extra or not at the end.
 expect from_text("Zg") == Err(InvalidCbor(0)) and from_text("Zm8") == Err(InvalidCbor(0)) and from_text("Z") == Err(InvalidCbor(0))
+
+## Too much padding ("Zg===", "Z===", "====") is an error at byte 0.
 expect from_text("Zg===") == Err(InvalidCbor(0)) and from_text("Z===") == Err(InvalidCbor(0)) and from_text("====") == Err(InvalidCbor(0))
+
+## Padding not at the end ("Zg==Zg==", "Z=g=", "Zm=v") is an error at byte 0.
 expect from_text("Zg==Zg==") == Err(InvalidCbor(0)) and from_text("Z=g=") == Err(InvalidCbor(0)) and from_text("Zm=v") == Err(InvalidCbor(0))
 
 ## The unused bits before the padding must be zero (RFC 4648 3.5): one text for each byte list.
 expect from_text("Zg==") == Ok(['f']) and from_text("Zh==") == Err(InvalidCbor(0)) and from_text("Zv==") == Err(InvalidCbor(0))
+
+## "Zm8=" reads as "fo". "Zm9=" and "Zm/=" have unused bits set: errors at byte 0.
 expect from_text("Zm8=") == Ok(['f', 'o']) and from_text("Zm9=") == Err(InvalidCbor(0)) and from_text("Zm/=") == Err(InvalidCbor(0))
 
 ## White space, line breaks, base64url and text that is not ASCII are errors.
 expect from_text(" Zg=") == Err(InvalidCbor(0)) and from_text("Zg==\n") == Err(InvalidCbor(0)) and from_text("Zm9v\r\nYg==") == Err(InvalidCbor(0))
+
+## A space or a tab inside the text ("Zm 9", "Zm9v" tab "YmFy") is an error at byte 0.
 expect from_text("Zm 9") == Err(InvalidCbor(0)) and from_text("Zm9v\tYmFy") == Err(InvalidCbor(0))
+
+## The base64url characters - and _ are errors at byte 0.
 expect from_text("-_-_") == Err(InvalidCbor(0)) and from_text("Zm9v-w==") == Err(InvalidCbor(0)) and from_text("Zm9v_w==") == Err(InvalidCbor(0))
+
+## "+/+/" reads as fb ff bf.
 expect from_text("+/+/") == Ok([0xfb, 0xff, 0xbf])
+
+## Text that is not ASCII ("éé", "Zm9vé===") is an error at byte 0.
 expect from_text("éé") == Err(InvalidCbor(0)) and from_text("Zm9vé===") == Err(InvalidCbor(0))
 
 ## Without the leniency, text is an error for a List(U8) and a Cbor.Bytes.

@@ -26,10 +26,10 @@ Features:
 
 | Item | Value |
 | --- | --- |
-| Version | 0.5.0 (section "Changes": a migration table from 0.4) |
+| Version | 0.6.2 (section "Changes"; 0.6.0 has a migration table from 0.5) |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
-| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-07-ad3a5d2`). The tests also pass on `nightly-2026-10-19-601b54c`. |
+| Compiler | the Zig compiler (nightlies of 2026-11-08 or later: the codec contract with format-owned errors). CI uses the nightly in `.roc-version` (`nightly-2026-11-13-03dce41`). The tests also pass on `nightly-2026-11-11-7679cc5`. |
 | Reader | Strict by default. Each lenient read is a `Cbor.Leniency` in the option `allow`. |
 | Writer | Always well-formed, preferred serialization (shortest heads and floats). Deterministic with `key_order: Sorted`. |
 | Streams | Read and write data larger than memory, one item, entry or chunk at a time (section "Streams") |
@@ -65,12 +65,12 @@ A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `enc
 
 | Item | Type | Use |
 | --- | --- | --- |
-| `Cbor.parse` | `List(U8) -> Try(a, [InvalidCbor(U64), ..errs])` | Read one item from all of the bytes, strict. The same as `parse_with(bytes, {})`. |
-| `Cbor.parse_with` | `List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs])` | Read with options (section "Options") |
-| `Cbor.parse_prefix` | `List(U8) -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), ..errs])` | Read one item at the start of the bytes. `rest` is the bytes after it (a slice, no copy). For WebAuthn authenticator data. |
-| `Cbor.parse_prefix_with` | `List(U8), Cbor.Options -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), ..errs])` | The same, with options |
-| `Cbor.parse_sequence` | `List(U8) -> Try(List(a), [InvalidCbor(U64), ..errs])` | Read a CBOR sequence (RFC 8742): zero or more items. Empty bytes give `[]`. |
-| `Cbor.parse_sequence_with` | `List(U8), Cbor.Options -> Try(List(a), [InvalidCbor(U64), ..errs])` | The same, with options. `max_items` counts for each item. |
+| `Cbor.parse` | `List(U8) -> Try(a, Cbor.Error)` | Read one item from all of the bytes, strict. The same as `parse_with(bytes, {})`. |
+| `Cbor.parse_with` | `List(U8), Cbor.Options -> Try(a, Cbor.Error)` | Read with options (section "Options") |
+| `Cbor.parse_prefix` | `List(U8) -> Try({ value : a, rest : List(U8) }, Cbor.Error)` | Read one item at the start of the bytes. `rest` is the bytes after it (a slice, no copy). For WebAuthn authenticator data. |
+| `Cbor.parse_prefix_with` | `List(U8), Cbor.Options -> Try({ value : a, rest : List(U8) }, Cbor.Error)` | The same, with options |
+| `Cbor.parse_sequence` | `List(U8) -> Try(List(a), Cbor.Error)` | Read a CBOR sequence (RFC 8742): zero or more items. Empty bytes give `[]`. |
+| `Cbor.parse_sequence_with` | `List(U8), Cbor.Options -> Try(List(a), Cbor.Error)` | The same, with options. `max_items` counts for each item. |
 | `Cbor.encode` | `a -> List(U8)` | Write one item. A derived encoder cannot fail. An `encoder_for` of your own with a wrong item count crashes here. |
 | `Cbor.encode_try` | `a -> Try(List(U8), [CountMismatch, ..err])` | Write one item. `Err(CountMismatch)` when an `encoder_for` of your own writes a wrong item count. |
 | `Cbor.encode_with` | `a, Cbor.WriteOptions -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])` | Write with options (section "Write options") |
@@ -82,7 +82,7 @@ A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `enc
 | `Cbor.path_at` | `List(U8), U64 -> Try(List(Cbor.Step), [NotFound])` | The path to the item that starts at a position, for example the position of `InvalidCbor(pos)` |
 | `Cbor.Step` | `[Index(U64), Key(Str)]` | One step of a path: an array index or a map key |
 
-The tables leave out the `where` clauses: an `a` that is read has `where [a.Parseable([InvalidCbor(U64), ..errs])]`, and an `a` that is written has `where [a.Encodable(err)]` with the error row of the function (section "`where` aliases").
+The tables leave out the `where` clauses: an `a` that is read has `where [a.Parseable(Cbor.Error)]`, and an `a` that is written has `where [a.Encodable(err)]` with the error row of the function (section "`where` aliases").
 
 ### Types
 
@@ -100,49 +100,96 @@ The tables leave out the `where` clauses: an `a` that is read has `where [a.Pars
 
 | Item | Type | Use |
 | --- | --- | --- |
-| `Cbor.Reader` | opaque | The checked token reader of a parse: bytes, position, checks. A `parser_for` gets it and gives back the reader after its item. |
-| `Cbor.Writer` | opaque | The output of an encode. Each item goes through an `encode_*` function, which counts it. |
+| `Cbor.Reader` | opaque | The checked token reader of a parse: bytes, position, checks. A `parser_for` gets it and gives back the reader after its item. `Cbor.Reader.new` starts a read of your own (section "A format of your own"). |
+| `Cbor.Writer` | opaque | The output of an encode. Each item goes through an `encode_*` function, which counts it. `Cbor.Writer.new` starts a write of your own (section "A format of your own"). |
 | `Cbor.Container` | opaque | The writer inside a list, a tuple, a record or a tag. Only the `add` callback writes to it, one item for each call. |
-| `Cbor.parse_item` | `Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs])` | Read one item of the type `a` |
+| `Cbor.parse_item` | `Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, Cbor.Error)` | Read one item of the type `a` |
 | `Cbor.encode_item` | `a, Cbor.Writer -> Try(Cbor.Writer, err)` | Write one item of the type `a` |
-| `Cbor.parse_cbor_tag` | `Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64)])` | Read the head of a tag. `value` is the tag number, `rest` is at the tagged item. |
+| `Cbor.parse_cbor_tag` | `Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, Cbor.Error)` | Read the head of a tag. `value` is the tag number, `rest` is at the tagged item. |
 | `Cbor.encode_tagged` | `U64, a, Cbor.Writer -> Try(Cbor.Writer, err)` | Write a tag and its one tagged item |
-| `Cbor.peek` | `Cbor, Cbor.Reader -> Try(Cbor.Kind, [InvalidCbor(U64)])` | The kind of the next item, with no read |
+| `Cbor.peek` | `Cbor, Cbor.Reader -> Try(Cbor.Kind, Cbor.Error)` | The kind of the next item, with no read |
 | `Cbor.Kind` | `[Int, Bytes, Text, Array, Map, Tag(U64), Bool, Null, Undefined, Simple(U8), Float]` | The result of `peek` |
-| `Cbor.parse_union` | `Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs])` | Read one tag union with its own layout and tag name case |
+| `Cbor.parse_union` | `Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, Cbor.Error)` | Read one tag union with its own layout and tag name case |
 | `Cbor.UnionOptions` | `{ unions ?: Cbor.Unions, tags ?: [Exact, Upper, Lower] }` | The options of `parse_union` |
-| `Cbor.parse_bytes` | `Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64)])` | Read a byte string (major type 2) only |
+| `Cbor.parse_bytes` | `Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, Cbor.Error)` | Read a byte string (major type 2) only |
 | `Cbor.encode_bytes` | `List(U8), Cbor.Writer -> Try(Cbor.Writer, err)` | Write a byte string in one append |
-| `Cbor.invalid_value` | `Cbor, Cbor.Reader -> [InvalidCbor(U64)]` | The error of your own reader at a position: `Err(Cbor.invalid_value(encoding, state))` |
+| `Cbor.invalid_value` | `Cbor, Cbor.Reader -> Cbor.Error` | The error of your own reader at a position: `Err(Cbor.invalid_value(encoding, state))` |
 | `Cbor.encode_list` | `Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)` | Write an array of a declared count. Each call of `add` writes exactly one item. `encode_tuple` is the same. `encode_tag` also takes the tag name after the writer. `encode_record` gives `add` a field name too, and `encode_dict` a key writer and a value writer. |
-| `Cbor.parse_str`, `Cbor.encode_str` and the like (`parse_u64`, `encode_f64`, ...) | `Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64)])`, `Str, Cbor.Writer -> Try(Cbor.Writer, err)` | The codec protocol. The derived `parser_for` and `encoder_for` call them. Your own code can call them too. |
+| `Cbor.parse_str`, `Cbor.encode_str` and the like (`parse_u64`, `encode_f64`, ...) | `Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, Cbor.Error)`, `Str, Cbor.Writer -> Try(Cbor.Writer, err)` | The codec protocol. The derived `parser_for` and `encoder_for` call them. Your own code can call them too. |
+
+### A format of your own
+
+A type of your own (`parser_for`, `encoder_for`) is enough for most needs. A format of your own is for state beside the
+bytes, or for one codec of a type for two formats: for example a payload that holds files, where the encoder collects
+the files it meets and the parser gets a table of them. The format is a type of your own with the methods of the codec
+protocol, and each method is one call of the same method of `Cbor`. Its write state is a `Cbor.WriterWith(s)`: the
+writer and a value `s` of your own. Its read state holds the `Cbor` and the `Cbor.Reader` of `Cbor.Reader.new`, and your
+own values. `examples/outside.roc` is a whole format.
+
+| Item | Type | Use |
+| --- | --- | --- |
+| `Cbor.Reader.new` | `List(U8), Cbor.Options -> Try({ cbor : Cbor, reader : Cbor.Reader }, Cbor.Error)` | Start a read. The checks of `parse_with` come first (the walk), and the bytes must be exactly one item. `cbor` and `reader` go to each `parse_*` method. |
+| `Cbor.Reader.finish` | `Cbor.Reader -> Try({}, Cbor.Error)` | End a read: `Ok` when the reader is at the end of the bytes, else `InvalidCbor` at the reader |
+| `Cbor.Writer.new` | `Cbor.WriteOptions -> Cbor.Writer` | Start a write of one root item. `fields` and `key_order` apply as in `encode_with`. |
+| `Cbor.Writer.finish` | `Cbor.Writer -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])` | End a write: the bytes, with the checks and the sort of `encode_with` |
+| `Cbor.WriterWith(s)` | `{ writer : Cbor.Writer, state : s }` | A writer with a value of your own beside it |
+| `Cbor.ContainerWith(s)` | `{ container : Cbor.Container, state : s }` | A container with that value |
+| `Cbor.encode_list_carry` | The type of `encode_list`, with `Cbor.WriterWith(s)` for the writer and `Cbor.ContainerWith(s)` for the container | `encode_list`, and each item gets the value of your own and gives it back for the next item. Also `encode_tuple_carry`, `encode_tag_carry`, `encode_record_carry` and `encode_dict_carry`, for `encode_tuple`, `encode_tag`, `encode_record` and `encode_dict`. |
+
+```roc
+## The write state: the writer of roc-cbor, and the files so far.
+Enc : Cbor.WriterWith(List(Str))
+
+Wire := [Default].{
+	encode_list : Enc, U64, (Cbor.ContainerWith(List(Str)), (Cbor.ContainerWith(List(Str)), (Enc -> Try(Enc, err)) -> Try(Cbor.ContainerWith(List(Str)), err)) -> Try(Cbor.ContainerWith(List(Str)), err)) -> Try(Enc, err)
+	encode_list = |e, count, write_items| Cbor.encode_list_carry(e, count, write_items)
+	# ... each method of the codec protocol, one call of Cbor
+}
+
+## The write: start, the value, end.
+e = encode_shape(value, { writer: Cbor.Writer.new({}), state: [] })?
+bytes = e.writer.finish()?
+
+## The read: start, the value, end.
+start = Cbor.Reader.new(bytes, {})?
+parsed = parse_shape({ cbor: start.cbor, reader: start.reader, files })?
+parsed.rest.reader.finish()?
+```
+
+The counts are checked as in a derived encoder: a wrong count is `CountMismatch` at `finish`. A read needs nothing more:
+each `parse_*` method takes `Cbor` and `Cbor.Reader` and gives the reader after the item. A tag union reads with `peek`,
+`parse_str` and the `parse_dict_*` and `parse_tuple_*` methods.
+
+Write the methods of your format with a `match` that gives the error, not with `?`, where speed matters: an early return
+makes the compiler lose the inlining of the encoder (roc-lang/roc#13035, section "Known compiler issues"). A record of
+options in a `let` needs its annotation (`options : Cbor.WriteOptions`), as for `encode_with`.
 
 ### `where` aliases
 
 | Alias | Is the same as | Use |
 | --- | --- | --- |
-| `a.Cbor.Parseable(errs)` | `a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, errs))` | A function that calls `Cbor.parse` with a type variable: `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` |
+| `a.Cbor.Parseable(err)` | `a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, err))` | A function that calls `Cbor.parse` with a type variable: `where [a.Cbor.Parseable(Cbor.Error)]` |
 | `a.Cbor.Encodable(err)` | `a.encoder_for : Cbor -> (a, Cbor.Writer -> Try(Cbor.Writer, err))` | A function that calls `Cbor.encode` with a type variable: `where [a.Cbor.Encodable([])]` |
-| `a.Cbor.Readable(errs)` | `a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])` | The short form. The function can `match` on both errors. |
+| `a.Cbor.Readable` | `a.Cbor.Parseable(Cbor.Error)` | The short form. The function can `match` on both errors. |
 | `a.Cbor.Writable` | `a.Cbor.Encodable([])` | The short form |
 
+`Cbor.Error` is `[InvalidCbor(U64), MissingRequiredField(Str)]`: the one error of every read. The codec protocol of the compiler requires each operation of a derived parser to have the format's error, so a custom `parser_for` gives `Cbor.Error` too (it can give only `InvalidCbor`).
+
 ```roc
-read : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
+read : List(U8) -> Try(a, Str) where [a.Cbor.Readable]
 read = |bytes|
 	match Cbor.parse(bytes) {
 		Ok(v) => Ok(v)
 		Err(MissingRequiredField(field)) => Err("missing ${field}")
 		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
-		Err(_) => Err("other")
 	}
 ```
 
-A form of `Readable` with no `errs` is not possible: the compiler does not allow `..` in an alias.
 `examples/round_trip.roc` uses each public item, except the stream types: `examples/stream.roc` uses those. `tests/aliases.roc` has generic helpers with `Readable` and `Writable`.
 
 ### Options
 
-Each field of `Cbor.Options` is optional: `{}` is the same as `parse`.
+Each field of `Cbor.Options` is optional: `{}` is the same as `parse`. `Cbor.Reader.new` takes the same options.
 A record in a `let` that is not the full record needs the annotation `opts : Cbor.Options`. A record literal in the call does not.
 
 | Field | Default | Value |
@@ -195,7 +242,7 @@ It checks only well-formedness (any head width, indefinite lengths, duplicate ke
 
 ### Write options
 
-Each field of `Cbor.WriteOptions` is optional: `{}` is the same as `encode_try`.
+Each field of `Cbor.WriteOptions` is optional: `{}` is the same as `encode_try`. `Cbor.Writer.new` takes the same options.
 
 | Field | Default | Value |
 | --- | --- | --- |
@@ -389,7 +436,7 @@ The payloads of the union, and the other unions of the parse, keep the options o
 Action := [Create, Update, NotFound].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Action.(parsed.value), rest: parsed.rest })
@@ -398,7 +445,7 @@ Action := [Create, Update, NotFound].{
 
 ## The operations of a patch: { "op": "add", "path": "/a", "value": 1 }.
 Op := [Add({ path : Str, value : I64 }), Remove({ path : Str })].{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: Internal({ tag: "op", content: "value" }), tags: Lower }, state)?
 		Ok({ value: Op.(parsed.value), rest: parsed.rest })
@@ -440,14 +487,14 @@ There are two ways to use a decoder: the push loop (pure, the core), and `from_s
 
 | Function of each decoder | Type (`Cbor.Items`; the others are the same with their own type) | Use |
 | --- | --- | --- |
-| `push` | `Cbor.Items, List(U8) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), TooLarge(U64), ..errs]) }` | Give the next chunk. `values`: each item that the chunk completes, in order. `rest`: the decoder of the bytes after them, or the error. A `push` of `[]` changes nothing. |
-| `finish` | `Cbor.Items -> Try({}, [InvalidCbor(U64), TooLarge(U64)])` | The end of the input: `Ok({})` when the root (or the sequence) is complete, else the error of the cut item. It gives no value: each item is self-delimiting, so `push` already gave each whole item. |
+| `push` | `Cbor.Items, List(U8) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)]) }` | Give the next chunk. `values`: each item that the chunk completes, in order. `rest`: the decoder of the bytes after them, or the error. A `push` of `[]` changes nothing. |
+| `finish` | `Cbor.Items -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)])` | The end of the input: `Ok({})` when the root (or the sequence) is complete, else the error of the cut item. It gives no value: each item is self-delimiting, so `push` already gave each whole item. |
 | `position` | `Cbor.Items -> U64` | The position in the whole stream of the first byte after the items and heads that `push` gave |
-| `from_stream` | `Cbor.Items, Stream(Try(List(U8), e)) -> Stream(Try(a, [InvalidCbor(U64), TooLarge(U64), Input(e), ..errs]))` | A `Stream` of the items, from a `Stream` of chunks. A source error `e` is `Err(Input(e))`. |
+| `from_stream` | `Cbor.Items, Stream(Try(List(U8), e)) -> Stream(Try(a, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), Input(e)]))` | A `Stream` of the items, from a `Stream` of chunks. A source error `e` is `Err(Input(e))`. |
 
 An error ends the stream: `rest` is `Err`, and each error position is a position in the whole stream.
 Each item before an error is a valid item, and comes in `values` of the `push` that found the error. The stream as a whole is rejected: an app that needs all or nothing holds its effects until `finish` gives `Ok`.
-`Entries` adds the error `NotStreamable` (below). `ByteChunks` and `TextChunks` give only `InvalidCbor(U64)` (and `Input(e)` in `from_stream`).
+Each item is read with `a.Cbor.Parseable(Cbor.Error)`, so a stream decoder's error is `Cbor.Error` and `TooLarge`; `push` and `finish` give the same union. `Entries` adds the error `NotStreamable` (below). `ByteChunks` and `TextChunks` give only `InvalidCbor(U64)` (and `Input(e)` in `from_stream`).
 
 #### The push loop
 
@@ -695,8 +742,8 @@ What the package checks, the option that changes it, and what the app must check
 | Null and absent | Strict: a `null` goes to the reader of the field (`Err(Null)`, `Null`, or an error). No key is absent. | `NullAsAbsent`, `UndefinedAsNull` | With `NullAsAbsent`, a field cannot tell `null` from no key |
 | Numeric exactness | An integer out of the range of its type is an error, never cut. A float reads as an integer only with `FloatToInt` and when it is 2^53 - 1 or less. An integer reads as a float only when the float is exact. An `F32` that is not 0 and rounds to 0, or a finite value out of range, is an error. A `Dec` from an integer or a decimal fraction is exact. | `FloatToInt`, `IntFromText`, `DecFromText` | An `F32` from an f64 is rounded. A `Dec` from a float has the precision of the float (15 to 17 digits). |
 | Depth and items | 512 nested arrays, maps and tags or less. 1,000,000 levels give an error, no crash. | `max_depth`, `max_items` (no default) | Set `max_items` for input from a peer, and limit the size of the input |
-| Typed Ok is valid | A typed parse that gives `Ok` also gives `Ok` as a `Cbor.Value` with the same options: the one walk of the root item comes first. A fuzz property checks it. | none | Nothing |
-| Output well-formed | The writer is opaque. It counts the items of each level, and each slot and container has a level id. A wrong count, or a writer of another level, gives `Err(CountMismatch)` (`encode_try`, `encode_with`), or a crash in `encode`. | none | Use `encode_try` with an `encoder_for` of your own |
+| Typed Ok is valid | A typed parse that gives `Ok` also gives `Ok` as a `Cbor.Value` with the same options: the one walk of the root item comes first. `Cbor.Reader.new` does the same walk before it gives a reader. A fuzz property checks it. | none | Nothing |
+| Output well-formed | The writer is opaque. It counts the items of each level and checks that each place gets exactly one item, and each container has a level id. A writer of `Cbor.Writer.new` and the `_carry` functions have the same checks, and `Cbor.Writer.finish` gives the error. A wrong count, or a writer of another level, gives `Err(CountMismatch)` (`encode_try`, `encode_with`), or a crash in `encode`. | none | Use `encode_try` with an `encoder_for` of your own |
 | No duplicate keys written | A derived record has distinct keys. A Camel collision gives `Err(DuplicateMapKey)`. A `Cbor.ValueMap` has no duplicate key. Each derived `Dict` key form is distinct for distinct keys. | `key_order: Sorted` checks each map | A map of your own `encoder_for` is checked only with `Sorted` |
 | Preferred serialization | Shortest heads (also the 9-byte form), the shortest float with the same value, each NaN as `f9 7e00`, a bignum only above 64 bits, definite lengths | none | Nothing |
 | Deterministic order | Only with `key_order: Sorted` (RFC 8949 4.2.1, bytewise order of the key bytes): `encode_with` sorts each map. `Cbor.StreamWriter` with `Sorted` checks each key of a streamed map against the key before it: `Err(KeyOutOfOrder)`, or `Err(DuplicateMapKey)` for an equal key, before any byte of the key. | `key_order` (`WriteOptions`) | Use `Sorted` for bytes to hash or sign. Give a streamed map its keys in order. |
@@ -718,6 +765,8 @@ Known limits:
 | A decoder that is kept and given to `push` again is copied | As a `List` that is kept and appended to: then each chunk of an open item copies the item, O(n^2) for one large item. The `?` loop has no second reference. A `match` on `rest` whose `Err` branch keeps the old decoder while `finish` follows the loop, or a loop that keeps the whole result of `push`, has one. The compiler gives no warning. | Set the decoder from `r.rest?`, or in each branch (section "Streams"), or use `from_stream` |
 | `duplicate_keys: Last` on a streamed map with `key_order: Any` is `Err(NotStreamable)` | The last entry of a key is known only at the end of the map | Use `key_order: Sorted`, or `First`, or `parse_with` |
 | A Camel collision on read is found only when a key that matches two fields is in the input | The check is for each key | Do not give a record two fields with one camelCase key |
+| `Cbor.Reader.new` gives the error of bytes after the item before the error of the typed read | It checks the end at the start, so that the reader holds no end position | Both are errors. Each input with no bytes after the item gives the value or the error of `parse_with` |
+| A container taken out of a second write and given back in the first one is not found: the first write can give no bytes and no error | The level ids are for one write, and a pure function has no source of ids that are new across writes | Do not keep a writer or a container of one write in a value of another one |
 
 ## Data model
 
@@ -778,6 +827,53 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 | A `List(U8)` writes a byte string. A peer that needs an array of numbers needs `Cbor.U8Array`. | One form for bytes on write |
 
 ## Changes
+
+### 0.6.2
+
+A format of your own (roc-cbor#2): a format outside the package reads and writes through `Cbor.Reader` and `Cbor.Writer`, with state of its own beside them. No change to the bytes that are read and written, or to an existing signature. Built and tested with `nightly-2026-11-13-03dce41`.
+
+| Change | Detail |
+| --- | --- |
+| Start and end | `Cbor.Reader.new` and `finish`, `Cbor.Writer.new` and `finish` (section "A format of your own") |
+| Containers with state | `Cbor.WriterWith(s)`, `Cbor.ContainerWith(s)`, and `encode_list_carry`, `encode_tuple_carry`, `encode_tag_carry`, `encode_record_carry`, `encode_dict_carry`: the item callbacks carry a value of the caller. The checks of the plain functions, and the same cost. |
+| Internals | `encode_with` is `Cbor.Writer.new`, `encode_item` and `finish`. The end of a level (`leave`) is shared by `nest` and `nest_carry`. |
+| Tests | `tests/outside.roc`: a format of its own with state (a list of handles on write, a table on read), the bytes of `encode_with`, each `CountMismatch` case, the options of `Reader.new`, and the end of a read in base64 text. `examples/outside.roc`. |
+
+### 0.6.1
+
+Faster writes and skips. The API and the bytes that are read and written do not change. Built and tested with `nightly-2026-11-13-03dce41`.
+
+| Change | Detail |
+| --- | --- |
+| Writer | No early return of an error in the writer (workaround for [roc-lang/roc#13035](https://github.com/roc-lang/roc/issues/13035): an early return, from `?` or `return Err(e)`, makes the compiler lose the inlining of the writer). 10k records: `encode` 1.29 to 0.61 ms, `encode_try` and `encode_with` 2.93 to 0.62 ms |
+| Skip | An unknown record field or a skipped entry, with no early return (same issue): 10k records with 12 unknown fields each, 12.6 to 11.4 ms |
+
+### 0.6.0
+
+The codec contract of the Roc compiler of 2026-11-08 and later: each format owns one error type, and each operation of a derived parser gives it. 0.5.0 does not compile with that contract (`Encoding.ParseTagUnionSpec` takes four type parameters, and a format with required record fields needs `missing_field`). The bytes that are read and written do not change.
+
+| Change | Detail |
+| --- | --- |
+| `Cbor.Error` | `[InvalidCbor(U64), MissingRequiredField(Str)]`, the one error of every read. `MissingRequiredField(name)` still names the Roc field |
+| `missing_field` | The codec protocol's method for an absent required field |
+| `parse_tag_union` | Takes `Encoding.ParseTagUnionSpec(a, Cbor, Cbor.Reader, Cbor.Error)` |
+| Reads | `parse`, `parse_with`, `parse_prefix`, `parse_prefix_with`, `parse_sequence`, `parse_sequence_with`, `parse_item` and `parse_union` give `Cbor.Error`, not an open union |
+| Streams | The item readers of `Cbor.Items` and `Cbor.Entries` are `Parseable(Cbor.Error)`. `push`, `finish` and `from_stream` give one closed union each: `Cbor.Error` with `TooLarge` (and `NotStreamable` for `Entries`, `Input(e)` from `from_stream`) |
+| `Readable` | `a.Cbor.Readable`, with no type parameter |
+| Fuzz | The targets use roc-fuzz 0.6.1, with examples |
+| Speed | Same API and bytes. `python3 bench/compare/run.py` (`--opt=speed`, `nightly-2026-11-13-03dce41`), time of 0.6.0 against the start of the 0.6 work: 10k records read 9.2 to 3.5 ms and write 2.7 to 1.3 ms; 100k map keys into a `Dict` 16 to 8.0 ms and into a `Cbor.Value` 19 to 10.6 ms; 10k records with unknown fields 29 to 12.5 ms; 10k texts 1.5 to 0.74 ms. A fast walk of the root item, fast paths of the readers at a plain position (each other case goes to the general reader, with the same values and error positions), and a writer that checks each place when the next one opens. The peak RSS of a `Cbor.Value` of 100k map keys: 25 to 18 MB |
+| `fuzz.sh` | A build with warnings only (exit code 2) is a build: roc-fuzz 0.6.1 has a warning in its platform |
+| CI nightly | `.roc-version` is `nightly-2026-11-13-03dce41`. The tests also pass on `nightly-2026-11-11-7679cc5` |
+
+#### Migration from 0.5
+
+| 0.5.0 | 0.6.0 |
+| --- | --- |
+| `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` | `where [a.Cbor.Parseable(Cbor.Error)]` |
+| `where [a.Cbor.Readable(errs)]` | `where [a.Cbor.Readable]` |
+| A custom `parser_for` gives `[InvalidCbor(U64)]` | It gives `Cbor.Error` |
+| A `match` on the result of a read with `Err(_)` for other errors | A `match` on `InvalidCbor` and `MissingRequiredField` is complete |
+| A `match` on `finish` of `Cbor.Items` or `Cbor.Entries` | It also gives `MissingRequiredField` (from an item, as `push` does) |
 
 ### 0.5.0
 
@@ -931,6 +1027,7 @@ First release: the codec protocol, `Cbor.Bytes`, `parse_camel`, `parse_with`, `p
 | `Cbor.Items`: each split of the input into chunks gives the items and the error of `parse_with`, `max_buffer`, `push` and `finish` (values before an error, a cut item, an empty chunk, N items from one chunk) (37) | `roc test tests/stream.roc` |
 | `Cbor.Entries`: each split gives the entries and the error of `parse_with` of a `Dict`, duplicate keys (`Any`, `Sorted`), `max_buffer`, `push` and `finish` (38) | `roc test tests/stream_entries.roc` |
 | `Cbor.ByteChunks`, `Cbor.TextChunks`: each split gives the data and the error of `parse_with`, the UTF-8 hold back, `push` and `finish` (32) | `roc test tests/stream_chunks.roc` |
+| A format of your own with state (roc-cbor#2): `Cbor.Reader.new` and `finish`, `Cbor.Writer.new` and `finish`, the `_carry` container functions, each `CountMismatch` case, and the bytes of `encode_with` | `roc test tests/outside.roc` |
 | The adapters to the builtin `Stream`: `from_stream` of each decoder, `Cbor.chunk_source` and the writer helpers (75 checks). An app, not `roc test`: a `Stream` is effectful, and an `expect` cannot run an effect. It prints each failed check and exits with 1. | `roc check tests/stream_adapters.roc`, `roc tests/stream_adapters.roc` |
 | `Dict`: `encode_dict`, keys that are not text, the form of a key, `U128`, `I128` (56) | `roc test tests/dict.roc` |
 | Indefinite lengths with `IndefiniteLength` (32) | `roc test tests/indefinite.roc` |
@@ -944,9 +1041,10 @@ Each fix of 0.5.0 has a regression test, and each test was checked against the c
 
 | Script | Checks |
 | --- | --- |
-| `scripts/fuzz.sh [runs]` | The property tests with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.4.3: a fixed count of inputs for each target in `fuzz/` (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`). Linux x86-64 and macOS arm64 only. A failure is saved in `.cache/fuzz/art-<target>/`. |
+| `scripts/fuzz.sh [runs]` | The property tests with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.6.1 (each target reads its input bytes as the entropy of its generators, as 0.4.3 did; the generated values hold `Cbor` encoders, so they have no derived roc-fuzz input format): a fixed count of inputs for each target in `fuzz/` (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`). Linux x86-64 and macOS arm64 only. A failure is saved in `.cache/fuzz/art-<target>/`. |
 | `scripts/scale.sh [runs]` | Complexity. Each case of `bench/scale.roc` (writer), `bench/scale_read.roc` (reader) and `bench/scale_stream.roc` (the `Stream` adapters) is its own app (`--opt=speed`), at 5k, 10k, 20k and 40k items. The time for each item must not grow more than 2.5x (n log n for a key sort, depth for the depth cases). It fails on 0.4.1 (internal unions), on a quadratic duplicate check, on a decoder that is kept and pushed again, on a walk of the open item from its start at each chunk, and on a linear scan of the keys of a streamed map. Table "Stream scale cases". |
 | `scripts/bench.sh [--check \| --update] [runs]` | Speed of `bench/bench.roc`: 0.4.1 against HEAD, or HEAD against `bench/baseline.txt` (each time divided by the time of a `calib` case; a case fails above 1.5x) |
+| `python3 bench/compare/run.py [--refresh]` | A diagnostic for development (`bench/compare/README.md`): the same fixtures read and written by roc-cbor and by CBOR libraries of other languages as reference points, to find slow paths and compiler issues. A local report: its results are not committed. |
 | `scripts/differential.sh [count] [seed]` | `Cbor.Value` against Python `cbor2` 6.2.1 on the fuzz corpus, the RFC vectors and random items with mutations. A difference that is not in the table of `differential/differential.py` fails. `DIFF_STRICT=1`: padded numbers (no `PaddedNumbers`) are an expected difference. |
 | `scripts/bundle.sh` | Makes `dist/<hash>.tar.zst` and prints its release URL |
 | `scripts/test_bundle.sh` | Runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep` |
@@ -1009,7 +1107,9 @@ A tag has no `v`: roc reads the version from the URL, and the tag is a segment o
 | --- | --- | --- |
 | [roc-lang/roc#12917](https://github.com/roc-lang/roc/issues/12917) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | The drop of a value is recursive: dropping a `Cbor.Value` (or another recursive value) about 200,000 levels deep overflows the stack (fewer on arm64), also on an error path | The reader stops at `max_depth` (512). Do not build such values in app code. |
 | [roc-lang/roc#12919](https://github.com/roc-lang/roc/issues/12919) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | A format with `encode_key_start` crashes the compiler (SIGSEGV) with a `Dict` key of a composite type. A tag union key then also needs `encode_key_str`. | The package has no `encode_key_start` and no `parse_key_start`: a composite key is a compile error |
-| No issue yet (`nightly-2026-10-19-601b54c`) | A record that holds the output list, read after a callback, keeps a second reference to the list, so the next append copies it (an encode of n items is O(n^2)). On the dev backend, `match d.list { Pending(n) => .., _ => o }` on a destructured writer also copied the list. | The writer reads no field after a callback, and uses `if` there. `scripts/scale.sh` checks each writer shape. |
+| [roc-lang/roc#13032](https://github.com/roc-lang/roc/issues/13032) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-13-03dce41`) | A record that holds the output list, read after a callback, keeps a second reference to the list, so the next append copies it (an encode of n items is O(n^2)). On the dev backend, `match d.list { Pending(n) => .., _ => o }` on a destructured writer also copied the list. | The writer reads no field after a callback, and uses `if` there. `scripts/scale.sh` checks each writer shape. |
+| [roc-lang/roc#13025](https://github.com/roc-lang/roc/issues/13025) (`nightly-2026-11-13-03dce41`) | `Str.from_utf8` out of line decodes each code point and checks the last bytes again: 4.6x the time of Rust on short multi-byte text | `valid_utf8` checks UTF-8 in one pass in Roc in the walk (`TODO(roc#13025)` says how to go back). A test compares it with `Str.from_utf8`. |
+| [roc-lang/roc#13035](https://github.com/roc-lang/roc/issues/13035) (`nightly-2026-11-13-03dce41`) | An early return (from `?` or `return Err(e)`) in closure-heavy code makes LLVM lose its inlining: the writer was up to 2x slower, and 4.7x with a non-empty error type (`encode_try`) | The writer and `skip` give an error with a match and no return (`TODO(roc#13035)` says how to go back) |
 | [roc-lang/roc#12922](https://github.com/roc-lang/roc/issues/12922) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | The wasm32 dev backend (`--target=wasm32 --opt=dev`) gives each member of the lambda set of a closure call its own stack slots. The writer calls each item encoder at one place, so that frame grows with the number of encoders in the app, and each nesting level of a value uses it once. In a large app (336 KB for each level) `Cbor.encode` of `{ r : { x : List(U8) } }` overflowed a 1 MB stack: `RuntimeError: memory access out of bounds`. | The argument of the call has a name, and the call is alone in `run_slot`: the stack for each level is 3.5x smaller. It still grows with the number of encoders. `scripts/wasm_dev.sh` checks it. On `nightly-2026-10-19-601b54c`, the code of `Cbor.Entries` in the same app made a deep encode trap, so `scripts/wasm_dev.sh` builds `Entries` in a second app. For deep values in a large app, use a larger stack (`--wasm-stack-size`) or `--opt=speed`. |
 | [roc-lang/roc#12918](https://github.com/roc-lang/roc/issues/12918) (all nightlies seen) | The `Dict` hash has a fixed seed for each binary, so crafted keys make a `Dict` or a `Set` quadratic (hash flooding) | Section "Guarantees", known limits |
 | No issue yet (seen once) | `roc test` hung when the `encoder_for` of a recursive nominal tag union called `encode_item` on a record | No small repro yet |
@@ -1043,11 +1143,14 @@ Issue drafts for the rows with no issue wait for the maintainer. The repros of #
 | `tests/key_order.roc` | The read option `key_order: Sorted` |
 | `tests/stream.roc`, `tests/stream_entries.roc`, `tests/stream_chunks.roc`, `tests/stream_writer.roc` | The stream decoders `Items`, `Entries`, `ByteChunks`, `TextChunks`, and `StreamWriter` |
 | `tests/stream_adapters.roc` | An app: the adapters to the builtin `Stream` |
+| `tests/outside.roc` | A format of its own with state, through `Cbor.Reader.new`, `Cbor.Writer.new` and the `_carry` functions |
 | `tests/wasm_dev/` | The apps (`app.roc`, `entries.roc`), the expected checksums and the small platform of `scripts/wasm_dev.sh` |
 | `examples/round_trip.roc` | An app that uses each public item, reads a SQL row, reads a type over a tag, and reads tag unions of a peer. It runs on the echo host of roc, with no platform. |
 | `examples/stream.roc` | An app that writes and reads with each `Stream` adapter, with a source error. The same echo host. |
+| `examples/outside.roc` | An app with a format of its own: a payload with handles beside it, written and read back. The same echo host. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
-| `bench/` | `bench.roc` and `baseline.txt` (`scripts/bench.sh`), `scale.roc`, `scale_read.roc` and `scale_stream.roc` (`scripts/scale.sh`) |
+| `bench/` | `bench.roc` (its `dump` mode writes the fixtures of `bench/compare/`) and `baseline.txt` (`scripts/bench.sh`), `scale.roc`, `scale_read.roc` and `scale_stream.roc` (`scripts/scale.sh`) |
+| `bench/compare/` | `run.py` (the runner), `rusage.c` (peak RSS of each run), `roc/compare.roc`, and the Rust, Go, Python and Zig programs |
 | `differential/` | `value_dump.roc` (the Roc side) and `differential.py` (the `cbor2` side and the table of expected differences) |
 | `scripts/` | `all_tests.sh`, `fuzz.sh`, `scale.sh`, `bench.sh`, `differential.sh`, `wasm_dev.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |

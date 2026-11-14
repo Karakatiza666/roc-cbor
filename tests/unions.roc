@@ -151,7 +151,7 @@ expect {
 Id := U64.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
@@ -165,7 +165,7 @@ Id := U64.{
 Cell := [Number(I64), Word(Str)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {
@@ -180,6 +180,7 @@ Cell := [Number(I64), Word(Str)].{
 		}
 }
 
+## Internal tags with app types: Ref with tag 37 and 9 reads Ref(Id.(9)), Put with "w" and -4 reads Put(Cell.Word("w")) and Put(Cell.Number(-4)).
 expect {
 	r : Try(List([Ref(Id), Put(Cell)]), _)
 	r = Cbor.parse_with(
@@ -213,6 +214,7 @@ Tree := [Leaf(U64), Node(List(Tree))].{
 	parser_for : _
 }
 
+## The internal map of Node with a Leaf 1 and an empty Node reads as Tree.Node([Tree.Leaf(1), Tree.Node([])]).
 expect {
 	r : Try(Tree, _)
 	r = Cbor.parse_with(map([("kind", t("Node")), ("value", Array([obj([("kind", t("Leaf")), ("value", n(1))]), obj([("kind", t("Node")), ("value", Array([]))])]))]), internal)
@@ -253,12 +255,14 @@ expect {
 	r == Ok(Card({ last4: Err(Null) }))
 }
 
+## A null value in a Try(Str, [Missing]) payload field is an error at the null (byte 17).
 expect {
 	r : Try([Card({ last4 : Try(Str, [Missing]) })], _)
 	r = Cbor.parse_with(map([("kind", t("Card")), ("last4", Null)]), internal)
 	r == Err(InvalidCbor(17))
 }
 
+## With NullAsAbsent, a null value in a Try(Str, [Missing]) payload field reads as Err(Missing).
 expect {
 	r : Try([Card({ last4 : Try(Str, [Missing]) })], _)
 	r = Cbor.parse_with(map([("kind", t("Card")), ("last4", Null)]), { unions: kind, allow: [NullAsAbsent] })
@@ -344,6 +348,7 @@ expect {
 
 # External, the default, does not change
 
+## With External, [Cash, Card, Check(7), Wire("eu", 9)] reads back as written.
 expect {
 	r : Try(List(Pay), _)
 	r = Cbor.parse(Cbor.encode([Cash, Card({ last4: "1" }), Check(7), Wire("eu", 9)]))
@@ -366,7 +371,7 @@ expect Cbor.encode(Check(7)) == map([("Check", n(7))])
 Action := [Create, Update, NotFound, V2].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Action, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Action.(parsed.value), rest: parsed.rest })
@@ -377,13 +382,14 @@ Action := [Create, Update, NotFound, V2].{
 Op := [Add({ path : Str, value : I64 }), Remove({ path : Str }), MoveTo({ from : Str, path : Str })].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Op, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: Internal({ tag: "op", content: "value" }), tags: Lower }, state)?
 		Ok({ value: Op.(parsed.value), rest: parsed.rest })
 	}
 }
 
+## With tags: Upper, "CREATE", "UPDATE", "NOT_FOUND" and "V2" read as Create, Update, NotFound and V2.
 expect {
 	r : Try(List(Action), _)
 	r = Cbor.parse(Cbor.encode(["CREATE", "UPDATE", "NOT_FOUND", "V2"]))
@@ -403,6 +409,7 @@ expect {
 	)
 }
 
+## With tags: Lower and the tag key "op", add, remove and move_to maps read as Add, Remove and MoveTo, the tag key at any place.
 expect {
 	r : Try(List(Op), _)
 	r = Cbor.parse(
@@ -427,6 +434,7 @@ expect {
 ## The options are for the one union. A sibling union and a union in the payload keep the options of the parse.
 Notice : { action : Action, inner : [Create, Other], op : Op, ops : List(Op), pay : Pay }
 
+## In one record, Action reads "NOT_FOUND", the plain union reads "Create", Op reads "add" and "remove", Pay reads the external Check.
 expect {
 	bytes = map([
 		("action", t("NOT_FOUND")),
@@ -452,13 +460,14 @@ expect {
 Step := [Run(Pay), Stop].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Step, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Step, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: External, tags: Upper }, state)?
 		Ok({ value: Step.(parsed.value), rest: parsed.rest })
 	}
 }
 
+## Step reads {"RUN": <internal Check 7>} and "STOP" in a parse with Internal: [Step.Run(Check(7)), Step.Stop].
 expect {
 	r : Try(List(Step), _)
 	r = Cbor.parse_with(
@@ -472,13 +481,14 @@ expect {
 Wrapper := { a : [Create, Delete] }.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Wrapper, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Wrapper, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Upper }, state)?
 		Ok({ value: Wrapper.(parsed.value), rest: parsed.rest })
 	}
 }
 
+## Wrapper reads {"a": "Delete"}; {"a": "DELETE"} is an error at byte 3.
 expect {
 	r1 : Try(Wrapper, _)
 	r1 = Cbor.parse(map([("a", t("Delete"))]))
@@ -491,13 +501,14 @@ expect {
 Mode := [Fast, SlowDown(U64)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Mode, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Mode, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { tags: Lower }, state)?
 		Ok({ value: Mode.(parsed.value), rest: parsed.rest })
 	}
 }
 
+## Mode reads slow_down with 3 as SlowDown(3) in the internal form with Internal, and in the external form with parse.
 expect {
 	r1 : Try(Mode, _)
 	r1 = Cbor.parse_with(map([("kind", t("slow_down")), ("value", n(3))]), internal)

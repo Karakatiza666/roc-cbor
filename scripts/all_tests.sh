@@ -42,6 +42,9 @@ mkdir -p "$ROC_CACHE_DIR"
 "$ROC" test tests/stream_entries.roc
 # The stream decoders Cbor.ByteChunks and Cbor.TextChunks: each split gives the data and the error of parse_with, the UTF-8 hold back.
 "$ROC" test tests/stream_chunks.roc
+# A format of your own with state of its own (roc-cbor#2): Cbor.Reader.new and finish, Cbor.Writer.new and finish, and the
+# _carry container functions, with each CountMismatch case and the bytes of encode_with.
+"$ROC" test tests/outside.roc
 # The adapters to the builtin Stream: from_stream of each decoder, and the writer adapters. An app, not roc test: a
 # Stream is effectful. It prints each failed check and exits with 1.
 "$ROC" check tests/stream_adapters.roc

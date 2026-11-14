@@ -15,7 +15,7 @@ with_x : List(U8) -> List(U8)
 with_x = |item| [0xa2, 0x61, 0x61, 0x01, 0x61, 0x78].concat(item)
 
 ## The result of three readers for the same bytes: a record that skips `x`, a `Cbor.Value`, `path_at` of the item.
-Agree : { record : Try(R, [InvalidCbor(U64), MissingRequiredField(Str)]), value : Try(Cbor.Value, [InvalidCbor(U64)]), path : Try(List(Cbor.Step), [NotFound]) }
+Agree : { record : Try(R, Cbor.Error), value : Try(Cbor.Value, Cbor.Error), path : Try(List(Cbor.Step), [NotFound]) }
 
 readers : List(U8) -> Agree
 readers = |item| {
@@ -55,7 +55,7 @@ Chain := [End, Link(Chain)].{
 chain_bytes : U64 -> List(U8)
 chain_bytes = |n| List.repeat([0xa1, 0x64, 'L', 'i', 'n', 'k'], n).join().concat([0x63, 'E', 'n', 'd'])
 
-parse_chain : List(U8) -> Try(Chain, [InvalidCbor(U64), MissingRequiredField(Str)])
+parse_chain : List(U8) -> Try(Chain, Cbor.Error)
 parse_chain = |bytes| Cbor.parse(bytes)
 
 ## A recursive type with an internal tag: `{ "kind": "Node", "value": [child] }` or `{ "kind": "Leaf", "value": n }`.
@@ -63,7 +63,7 @@ Tree := [Leaf(U64), Node(List(Tree))].{
 	parser_for : _
 }
 
-parse_tree : List(U8) -> Try(Tree, [InvalidCbor(U64), MissingRequiredField(Str)])
+parse_tree : List(U8) -> Try(Tree, Cbor.Error)
 parse_tree = |bytes| Cbor.parse_with(bytes, internal)
 
 kind_node : List(U8)
@@ -112,23 +112,41 @@ bottom = |tree| {
 
 ## Invalid UTF-8, an overlong form, a surrogate.
 expect rejected([0x61, 0xff], 6)
+
+## The overlong form c0 80 in skipped text is an error at the text, byte 6.
 expect rejected([0x62, 0xc0, 0x80], 6)
+
+## The surrogate ed a0 80 in skipped text is an error at the text, byte 6.
 expect rejected([0x63, 0xed, 0xa0, 0x80], 6)
 
 ## The ASCII scan of the UTF-8 check: a bad byte after ASCII bytes, in text of 3, 32 and 33 bytes.
 expect rejected([0x63, 'a', 'b', 0xff], 6)
+
+## Text of 32 bytes, 31 'a' then ff, is an error at the text, byte 6.
 expect rejected([0x78, 32].concat(List.repeat('a', 31)).append(0xff), 6)
+
+## Text of 33 bytes, 32 'a' then ff, is an error at the text, byte 6.
 expect rejected([0x78, 33].concat(List.repeat('a', 32)).append(0xff), 6)
+
+## Text of 3 bytes, 'a' then the two bytes c3 a9, is valid in each reader.
 expect accepted([0x63, 'a', 0xc3, 0xa9])
+
+## Text of 33 'a' bytes is valid in each reader.
 expect accepted([0x78, 33].concat(List.repeat('a', 33)))
 
 ## A simple value of 2 bytes below 32 (`f8 00`, `f8 1f`). `f8 20` is valid.
 expect rejected([0xf8, 0x00], 6)
+
+## The simple value f8 1f is an error at byte 6.
 expect rejected([0xf8, 0x1f], 6)
+
+## The simple value f8 20 is valid in each reader.
 expect accepted([0xf8, 0x20])
 
 ## Reserved info, a lone break.
 expect rejected([0x1c], 6)
+
+## A lone break (ff) is an error at byte 6.
 expect rejected([0xff], 6)
 
 ## An indefinite length: an error in the strict readers. It is well formed, so `path_at` walks it (IndefiniteLength).
@@ -139,11 +157,17 @@ expect {
 
 ## In a nested map key, a nested array, a tagged item: the error is at the bad text.
 expect rejected([0xa1, 0x61, 0xff, 0x01], 7)
+
+## Invalid UTF-8 in text in a nested array (81 61 ff) is an error at the text, byte 7.
 expect rejected([0x81, 0x61, 0xff], 7)
+
+## Invalid UTF-8 in text in a tagged item (c0 61 ff) is an error at the text, byte 7.
 expect rejected([0xc0, 0x61, 0xff], 7)
 
 ## A map key of any type and any tag stay valid in a skipped item.
 expect accepted([0xa1, 0x01, 0x02])
+
+## A tagged item (c1 00) is valid in a skipped field.
 expect accepted([0xc1, 0x00])
 
 ## The record itself still needs text keys.
@@ -162,6 +186,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A key that is not text (01) before the tag key is an error at the map, byte 0.
 expect {
 	r : Try(Pay, _)
 	r = Cbor.parse_with([0xa3, 0x01, 0x02, 0x64, 'k', 'i', 'n', 'd', 0x65, 'C', 'h', 'e', 'c', 'k', 0x65, 'v', 'a', 'l', 'u', 'e', 0x07], internal)
@@ -175,12 +200,14 @@ expect {
 	r == Err(InvalidCbor(21))
 }
 
+## Invalid UTF-8 in another key (61 ff) is an error at that key, byte 19.
 expect {
 	r : Try(Pay, _)
 	r = Cbor.parse_with([0xa3, 0x64, 'k', 'i', 'n', 'd', 0x65, 'C', 'h', 'e', 'c', 'k', 0x65, 'v', 'a', 'l', 'u', 'e', 0x07, 0x61, 0xff, 0x01], internal)
 	r == Err(InvalidCbor(19))
 }
 
+## The simple value f8 00 in another value is an error at that value, byte 13.
 expect {
 	r : Try(Pay, _)
 	r = Cbor.parse_with([0xa2, 0x64, 'k', 'i', 'n', 'd', 0x64, 'C', 'a', 's', 'h', 0x61, 'x', 0xf8, 0x00], internal)
@@ -198,11 +225,17 @@ expect {
 
 ## Trailing bytes.
 expect Cbor.path_at([0x01, 0xff], 0) == Err(NotFound)
+
+## The item 01 followed by the extra byte 00 gives NotFound.
 expect Cbor.path_at([0x01, 0x00], 0) == Err(NotFound)
 
 ## An invalid item before `pos`: `f8 00`, invalid UTF-8, a break with no indefinite length.
 expect Cbor.path_at([0x82, 0xf8, 0x00, 0x01], 3) == Err(NotFound)
+
+## Invalid UTF-8 (61 ff) in an item before `pos` gives NotFound.
 expect Cbor.path_at([0x82, 0x61, 0xff, 0x01], 3) == Err(NotFound)
+
+## A break (ff) with no indefinite length before `pos` gives NotFound.
 expect Cbor.path_at([0x82, 0xff, 0x01], 2) == Err(NotFound)
 
 ## An item of indefinite length is well formed: `path_at` walks it, as for a parse with IndefiniteLength.
@@ -213,6 +246,8 @@ expect Cbor.path_at([0x82, 0x01, 0x61, 0xff], 1) == Err(NotFound)
 
 ## A map with a key that is not text: Ok next to it, NotFound through it.
 expect Cbor.path_at([0x82, 0xa1, 0x01, 0x02, 0x03], 4) == Ok([Index(1)])
+
+## A position in a map with the key 01 that is not text gives NotFound.
 expect Cbor.path_at([0x82, 0xa1, 0x01, 0x02, 0x03], 3) == Err(NotFound)
 
 # The depth limit: 512 arrays, maps and tags
@@ -224,6 +259,7 @@ expect {
 	r.is_ok()
 }
 
+## Cbor.Value: 513 nested arrays are an error at byte 512.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse(List.repeat(0x81, 513).append(0x00))
@@ -237,6 +273,7 @@ expect {
 	r.is_ok()
 }
 
+## Cbor.Value: 512 nested arrays around an empty array are an error at byte 512.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse(List.repeat(0x81, 512).append(0x80))
@@ -250,6 +287,7 @@ expect {
 	r.is_ok()
 }
 
+## Cbor.Value: 512 tags around an empty array are an error at byte 512.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse(List.repeat(0xc1, 512).append(0x80))
@@ -263,6 +301,7 @@ expect {
 	r == Ok({ a: 1 })
 }
 
+## A record with 512 nested arrays in the skipped field is an error at byte 6 + 511.
 expect {
 	r : Try(R, _)
 	r = Cbor.parse(with_x(List.repeat(0x81, 512).append(0x00)))
@@ -271,10 +310,14 @@ expect {
 
 ## path_at has no depth limit (a loop), so it finds the item of a depth error: 513 levels give a path.
 expect Cbor.path_at(List.repeat(0x81, 512).append(0x00), 512) == Ok(List.repeat(Index(0), 512))
+
+## path_at of the inner item of 513 nested arrays gives a path of 513 Index(0) steps.
 expect Cbor.path_at(List.repeat(0x81, 513).append(0x00), 513) == Ok(List.repeat(Index(0), 513))
 
 ## A recursive type of the app: 512 levels read, 513 are an error at the 513th map.
 expect parse_chain(chain_bytes(512)).is_ok()
+
+## A Chain of 513 Link maps is an error at the 513th map, byte 512 * 6.
 expect parse_chain(chain_bytes(513)).map_ok(|_| {}) == Err(InvalidCbor(512 * 6))
 
 ## 1,000,000 levels: an error, no crash (D1, D2).
@@ -284,15 +327,20 @@ expect {
 	r == Err(InvalidCbor(512))
 }
 
+## Cbor.Value: 1,000,000 nested tags are an error at byte 512, with no crash.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse(List.repeat(0xc1, 1_000_000).append(0x00))
 	r == Err(InvalidCbor(512))
 }
 
+## path_at of byte 0 in 1,000,000 nested arrays gives the empty path, with no crash.
 expect Cbor.path_at(List.repeat(0x81, 1_000_000).append(0x00), 0) == Ok([])
+
+## A Chain of 1,000,000 Link maps is an error at byte 512 * 6, with no crash.
 expect parse_chain(chain_bytes(1_000_000)).map_ok(|_| {}) == Err(InvalidCbor(512 * 6))
 
+## A record with 1,000,000 nested arrays in the skipped field is an error at byte 6 + 511, with no crash.
 expect {
 	r : Try(R, _)
 	r = Cbor.parse(with_x(List.repeat(0x81, 1_000_000).append(0x00)))
@@ -303,6 +351,8 @@ expect {
 
 ## 255 levels (a map and an array each), with the tag key first and with the content key first.
 expect parse_tree(tree_tag_first(255)).map_ok(bottom) == Ok((7, 255))
+
+## 255 Node levels with the content key first read, with the leaf 7 at the bottom.
 expect parse_tree(tree_content_first(255)).map_ok(bottom) == Ok((7, 255))
 
 ## 256 levels and the leaf map: 513 levels, an error at the leaf map.
@@ -313,7 +363,7 @@ expect parse_tree(tree_tag_first(256)).map_ok(|_| {}) == Err(InvalidCbor(256 * 1
 ## Two items read as one by a parser of your own. `parse_prefix` walks only the first item, so the second one is
 ## not walked: each check of the text must still be in the reader of `Cbor.Value` and of `Str`.
 TwoItems := (Cbor.Value, Cbor.Value).{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoItems, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoItems, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		first : { value : Cbor.Value, rest : Cbor.Reader }
 		first = Cbor.parse_item(encoding, state)?
@@ -324,7 +374,7 @@ TwoItems := (Cbor.Value, Cbor.Value).{
 }
 
 TwoTexts := (Str, Str).{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoTexts, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoTexts, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		first = Cbor.parse_str(encoding, state)?
 		second = Cbor.parse_str(encoding, first.rest)?
@@ -339,12 +389,14 @@ expect {
 	r.map_ok(|_| {}) == Err(InvalidCbor(1))
 }
 
+## Invalid UTF-8 in a map key of the second item, which is not walked, is an error at that key, byte 2.
 expect {
 	r : Try({ value : TwoItems, rest : List(U8) }, _)
 	r = Cbor.parse_prefix([0x01, 0xa1, 0x61, 0xff, 0x01])
 	r.map_ok(|_| {}) == Err(InvalidCbor(2))
 }
 
+## Invalid UTF-8 in the second Str of TwoTexts is an error at that text, byte 2.
 expect {
 	r : Try({ value : TwoTexts, rest : List(U8) }, _)
 	r = Cbor.parse_prefix([0x61, 'a', 0x61, 0xff])
@@ -360,5 +412,9 @@ expect {
 
 ## `path_at` through a map key with invalid UTF-8: NotFound (the walk of `path_at` rejects it).
 expect Cbor.path_at([0xa1, 0x61, 0xff, 0x01], 3) == Err(NotFound)
+
+## path_at through an indefinite-length map key with invalid UTF-8 in a chunk gives NotFound.
 expect Cbor.path_at([0xa1, 0x7f, 0x61, 0xff, 0xff, 0x01], 5) == Err(NotFound)
+
+## path_at through an indefinite-length map key of the chunks "a" and "b" gives Key("ab").
 expect Cbor.path_at([0xa1, 0x7f, 0x61, 'a', 0x61, 'b', 0xff, 0x01], 7) == Ok([Key("ab")])

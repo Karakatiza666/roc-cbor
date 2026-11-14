@@ -3,3 +3,4 @@
 /generated-docs/
 /docs/
 .tmp/
+bench/compare/zig/zig-pkg/
