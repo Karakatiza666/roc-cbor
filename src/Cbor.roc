@@ -4473,20 +4473,22 @@ pow2 = |e| {
 skip : Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64)])
 skip = |state| {
 	# An item with no items in it (most unknown fields) needs no walk state. On an error, the walk gives the position.
-	if state.raw == 0 {
-		match item_at(state.bytes, state.pos, any_length) {
-			Ok(it) if it.items == 0 => return Ok(at(state, it.next))
-			Ok(it) if it.major == 4 or it.major == 5 => {
-				# A flat array or map of definite length (each item with no items in it): a count, no walk state.
-				match skip_flat(state.bytes, it.next, it.items) {
-					Ok(end) => return Ok(at(state, end))
-					Err(Nested) => {}
-				}
+	# A flat array or map of definite length (each item with no items in it): a count, no walk state.
+	# TODO(roc#13035): one expression with no early return (see `nest`).
+	end =
+		if state.raw > 0 {
+			Err(Nested)
+		} else {
+			match item_at(state.bytes, state.pos, any_length) {
+				Ok(it) if it.items == 0 => Ok(it.next)
+				Ok(it) if it.major == 4 or it.major == 5 => skip_flat(state.bytes, it.next, it.items)
+				_ => Err(Nested)
 			}
-			_ => {}
 		}
+	match end {
+		Ok(e) => Ok(at(state, e))
+		Err(Nested) => walk(state, any_length, Bool.False)
 	}
-	walk(state, any_length, Bool.False)
 }
 
 ## The end of `items` whole items from `p`, each with no items in it (`item_at`). `Nested` at an item with items in it,
