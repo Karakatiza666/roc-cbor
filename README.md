@@ -26,7 +26,7 @@ Features:
 
 | Item | Value |
 | --- | --- |
-| Version | 0.6.0 (section "Changes": a migration table from 0.5) |
+| Version | 0.6.1 (section "Changes"; 0.6.0 has a migration table from 0.5) |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
 | Compiler | the Zig compiler (nightlies of 2026-11-08 or later: the codec contract with format-owned errors). CI uses the nightly in `.roc-version` (`nightly-2026-11-13-03dce41`). The tests also pass on `nightly-2026-11-11-7679cc5`. |
@@ -779,6 +779,15 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 
 ## Changes
 
+### 0.6.1
+
+Faster writes and skips. The API and the bytes that are read and written do not change. Built and tested with `nightly-2026-11-13-03dce41`.
+
+| Change | Detail |
+| --- | --- |
+| Writer | No early return of an error in the writer (workaround for [roc-lang/roc#13035](https://github.com/roc-lang/roc/issues/13035): an early return, from `?` or `return Err(e)`, makes the compiler lose the inlining of the writer). 10k records: `encode` 1.29 to 0.61 ms, `encode_try` and `encode_with` 2.93 to 0.62 ms |
+| Skip | An unknown record field or a skipped entry, with no early return (same issue): 10k records with 12 unknown fields each, 12.6 to 11.4 ms |
+
 ### 0.6.0
 
 The codec contract of the Roc compiler of 2026-11-08 and later: each format owns one error type, and each operation of a derived parser gives it. 0.5.0 does not compile with that contract (`Encoding.ParseTagUnionSpec` takes four type parameters, and a format with required record fields needs `missing_field`). The bytes that are read and written do not change.
@@ -1039,6 +1048,7 @@ A tag has no `v`: roc reads the version from the URL, and the tag is a segment o
 | [roc-lang/roc#12919](https://github.com/roc-lang/roc/issues/12919) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | A format with `encode_key_start` crashes the compiler (SIGSEGV) with a `Dict` key of a composite type. A tag union key then also needs `encode_key_str`. | The package has no `encode_key_start` and no `parse_key_start`: a composite key is a compile error |
 | [roc-lang/roc#13032](https://github.com/roc-lang/roc/issues/13032) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-13-03dce41`) | A record that holds the output list, read after a callback, keeps a second reference to the list, so the next append copies it (an encode of n items is O(n^2)). On the dev backend, `match d.list { Pending(n) => .., _ => o }` on a destructured writer also copied the list. | The writer reads no field after a callback, and uses `if` there. `scripts/scale.sh` checks each writer shape. |
 | [roc-lang/roc#13025](https://github.com/roc-lang/roc/issues/13025) (`nightly-2026-11-13-03dce41`) | `Str.from_utf8` out of line decodes each code point and checks the last bytes again: 4.6x the time of Rust on short multi-byte text | `valid_utf8` checks UTF-8 in one pass in Roc in the walk (`TODO(roc#13025)` says how to go back). A test compares it with `Str.from_utf8`. |
+| [roc-lang/roc#13035](https://github.com/roc-lang/roc/issues/13035) (`nightly-2026-11-13-03dce41`) | An early return (from `?` or `return Err(e)`) in closure-heavy code makes LLVM lose its inlining: the writer was up to 2x slower, and 4.7x with a non-empty error type (`encode_try`) | The writer and `skip` give an error with a match and no return (`TODO(roc#13035)` says how to go back) |
 | [roc-lang/roc#12922](https://github.com/roc-lang/roc/issues/12922) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | The wasm32 dev backend (`--target=wasm32 --opt=dev`) gives each member of the lambda set of a closure call its own stack slots. The writer calls each item encoder at one place, so that frame grows with the number of encoders in the app, and each nesting level of a value uses it once. In a large app (336 KB for each level) `Cbor.encode` of `{ r : { x : List(U8) } }` overflowed a 1 MB stack: `RuntimeError: memory access out of bounds`. | The argument of the call has a name, and the call is alone in `run_slot`: the stack for each level is 3.5x smaller. It still grows with the number of encoders. `scripts/wasm_dev.sh` checks it. On `nightly-2026-10-19-601b54c`, the code of `Cbor.Entries` in the same app made a deep encode trap, so `scripts/wasm_dev.sh` builds `Entries` in a second app. For deep values in a large app, use a larger stack (`--wasm-stack-size`) or `--opt=speed`. |
 | [roc-lang/roc#12918](https://github.com/roc-lang/roc/issues/12918) (all nightlies seen) | The `Dict` hash has a fixed seed for each binary, so crafted keys make a `Dict` or a `Set` quadratic (hash flooding) | Section "Guarantees", known limits |
 | No issue yet (seen once) | `roc test` hung when the `encoder_for` of a recursive nominal tag union called `encode_item` on a record | No small repro yet |
