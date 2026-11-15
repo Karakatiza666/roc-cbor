@@ -26,10 +26,10 @@ Features:
 
 | Item | Value |
 | --- | --- |
-| Version | 0.5.0 (section "Changes": a migration table from 0.4) |
+| Version | 0.5.1 (section "Changes": the format error of the 11-14 compiler; a migration table from 0.4 in 0.5.0) |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
-| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-07-ad3a5d2`). The tests also pass on `nightly-2026-10-19-601b54c`. |
+| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-14-a87808d`). The 11-07 nightly and older do not compile 0.5.1: use 0.5.0 with them. |
 | Reader | Strict by default. Each lenient read is a `Cbor.Leniency` in the option `allow`. |
 | Writer | Always well-formed, preferred serialization (shortest heads and floats). Deterministic with `key_order: Sorted`. |
 | Streams | Read and write data larger than memory, one item, entry or chunk at a time (section "Streams") |
@@ -59,6 +59,8 @@ parsed = Cbor.parse(bytes)
 `Cbor.parse` takes its type from the context. Write the type in an annotation.
 `parse` gives `Err(InvalidCbor(pos))` when the bytes are not valid, not in the profile, or do not fit the type. `pos` is the byte position of the problem.
 It gives `Err(MissingRequiredField(name))` when a record field is absent. `name` is the Roc name of the field.
+The error type of the format is `[InvalidCbor(U64), MissingRequiredField(Str)]`, for each type. Each `parser_for` gives this error type,
+also a `parser_for` of your own (section "Building blocks"). A `match` on the result of a read has a branch for each of the two errors.
 A type that you define (`:=` or `::`) must opt in with `parser_for : _` and `encoder_for : _` (Roc langref, "Parsers").
 
 ### Read and write
@@ -105,17 +107,17 @@ The tables leave out the `where` clauses: an `a` that is read has `where [a.Pars
 | `Cbor.Container` | opaque | The writer inside a list, a tuple, a record or a tag. Only the `add` callback writes to it, one item for each call. |
 | `Cbor.parse_item` | `Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs])` | Read one item of the type `a` |
 | `Cbor.encode_item` | `a, Cbor.Writer -> Try(Cbor.Writer, err)` | Write one item of the type `a` |
-| `Cbor.parse_cbor_tag` | `Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64)])` | Read the head of a tag. `value` is the tag number, `rest` is at the tagged item. |
+| `Cbor.parse_cbor_tag` | `Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])` | Read the head of a tag. `value` is the tag number, `rest` is at the tagged item. |
 | `Cbor.encode_tagged` | `U64, a, Cbor.Writer -> Try(Cbor.Writer, err)` | Write a tag and its one tagged item |
-| `Cbor.peek` | `Cbor, Cbor.Reader -> Try(Cbor.Kind, [InvalidCbor(U64)])` | The kind of the next item, with no read |
+| `Cbor.peek` | `Cbor, Cbor.Reader -> Try(Cbor.Kind, [InvalidCbor(U64), MissingRequiredField(Str)])` | The kind of the next item, with no read |
 | `Cbor.Kind` | `[Int, Bytes, Text, Array, Map, Tag(U64), Bool, Null, Undefined, Simple(U8), Float]` | The result of `peek` |
 | `Cbor.parse_union` | `Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs])` | Read one tag union with its own layout and tag name case |
 | `Cbor.UnionOptions` | `{ unions ?: Cbor.Unions, tags ?: [Exact, Upper, Lower] }` | The options of `parse_union` |
-| `Cbor.parse_bytes` | `Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64)])` | Read a byte string (major type 2) only |
+| `Cbor.parse_bytes` | `Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])` | Read a byte string (major type 2) only |
 | `Cbor.encode_bytes` | `List(U8), Cbor.Writer -> Try(Cbor.Writer, err)` | Write a byte string in one append |
-| `Cbor.invalid_value` | `Cbor, Cbor.Reader -> [InvalidCbor(U64)]` | The error of your own reader at a position: `Err(Cbor.invalid_value(encoding, state))` |
+| `Cbor.invalid_value` | `Cbor, Cbor.Reader -> [InvalidCbor(U64), MissingRequiredField(Str)]` | The error of your own reader at a position: `Err(Cbor.invalid_value(encoding, state))` |
 | `Cbor.encode_list` | `Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)` | Write an array of a declared count. Each call of `add` writes exactly one item. `encode_tuple` is the same. `encode_tag` also takes the tag name after the writer. `encode_record` gives `add` a field name too, and `encode_dict` a key writer and a value writer. |
-| `Cbor.parse_str`, `Cbor.encode_str` and the like (`parse_u64`, `encode_f64`, ...) | `Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64)])`, `Str, Cbor.Writer -> Try(Cbor.Writer, err)` | The codec protocol. The derived `parser_for` and `encoder_for` call them. Your own code can call them too. |
+| `Cbor.parse_str`, `Cbor.encode_str` and the like (`parse_u64`, `encode_f64`, ...) | `Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])`, `Str, Cbor.Writer -> Try(Cbor.Writer, err)` | The codec protocol. The derived `parser_for` and `encoder_for` call them. Your own code can call them too. |
 
 ### `where` aliases
 
@@ -123,19 +125,24 @@ The tables leave out the `where` clauses: an `a` that is read has `where [a.Pars
 | --- | --- | --- |
 | `a.Cbor.Parseable(errs)` | `a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, errs))` | A function that calls `Cbor.parse` with a type variable: `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` |
 | `a.Cbor.Encodable(err)` | `a.encoder_for : Cbor -> (a, Cbor.Writer -> Try(Cbor.Writer, err))` | A function that calls `Cbor.encode` with a type variable: `where [a.Cbor.Encodable([])]` |
-| `a.Cbor.Readable(errs)` | `a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])` | The short form. The function can `match` on both errors. |
+| `a.Cbor.Readable(errs)` | `a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])` | The short form. The function can `match` on both errors. Each parser gives the error type of the format, so `errs` is `[]`. |
 | `a.Cbor.Writable` | `a.Cbor.Encodable([])` | The short form |
 
 ```roc
 read : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
-read = |bytes|
-	match Cbor.parse(bytes) {
+read = |bytes| {
+	r : Try(a, _)
+	r = Cbor.parse(bytes)
+	match r {
 		Ok(v) => Ok(v)
 		Err(MissingRequiredField(field)) => Err("missing ${field}")
 		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
 		Err(_) => Err("other")
 	}
+}
 ```
+
+The annotation `r : Try(a, _)` is necessary: with a `match` directly on `Cbor.parse(bytes)`, the compiler of the 11-14 nightly gives a false warning (section "Known compiler issues").
 
 A form of `Readable` with no `errs` is not possible: the compiler does not allow `..` in an alias.
 `examples/round_trip.roc` uses each public item, except the stream types: `examples/stream.roc` uses those. `tests/aliases.roc` has generic helpers with `Readable` and `Writable`.
@@ -280,7 +287,7 @@ Tag numbers are in the [IANA registry](https://www.iana.org/assignments/cbor-tag
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		bytes = Cbor.parse_bytes(encoding, tag.rest)?
@@ -440,13 +447,14 @@ There are two ways to use a decoder: the push loop (pure, the core), and `from_s
 
 | Function of each decoder | Type (`Cbor.Items`; the others are the same with their own type) | Use |
 | --- | --- | --- |
-| `push` | `Cbor.Items, List(U8) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), TooLarge(U64), ..errs]) }` | Give the next chunk. `values`: each item that the chunk completes, in order. `rest`: the decoder of the bytes after them, or the error. A `push` of `[]` changes nothing. |
+| `push` | `Cbor.Items, List(U8) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)]) }` | Give the next chunk. `values`: each item that the chunk completes, in order. `rest`: the decoder of the bytes after them, or the error. A `push` of `[]` changes nothing. |
 | `finish` | `Cbor.Items -> Try({}, [InvalidCbor(U64), TooLarge(U64)])` | The end of the input: `Ok({})` when the root (or the sequence) is complete, else the error of the cut item. It gives no value: each item is self-delimiting, so `push` already gave each whole item. |
 | `position` | `Cbor.Items -> U64` | The position in the whole stream of the first byte after the items and heads that `push` gave |
-| `from_stream` | `Cbor.Items, Stream(Try(List(U8), e)) -> Stream(Try(a, [InvalidCbor(U64), TooLarge(U64), Input(e), ..errs]))` | A `Stream` of the items, from a `Stream` of chunks. A source error `e` is `Err(Input(e))`. |
+| `from_stream` | `Cbor.Items, Stream(Try(List(U8), e)) -> Stream(Try(a, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), Input(e)]))` | A `Stream` of the items, from a `Stream` of chunks. A source error `e` is `Err(Input(e))`. |
 
 An error ends the stream: `rest` is `Err`, and each error position is a position in the whole stream.
 Each item before an error is a valid item, and comes in `values` of the `push` that found the error. The stream as a whole is rejected: an app that needs all or nothing holds its effects until `finish` gives `Ok`.
+The type of each item has `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]`: the error type of the format. The decoder adds its own errors.
 `Entries` adds the error `NotStreamable` (below). `ByteChunks` and `TextChunks` give only `InvalidCbor(U64)` (and `Input(e)` in `from_stream`).
 
 #### The push loop
@@ -779,6 +787,29 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 
 ## Changes
 
+### 0.5.1
+
+A port to the derived parsers of the 11-14 nightly (`nightly-2026-11-14-a87808d`). In that compiler, the format owns the error type of a parse
+(roc-lang/roc `a192c58059`, `c4d9aba1a0`). The 11-07 nightly does not compile this release.
+
+| Change | Detail |
+| --- | --- |
+| Format error | Each reader of the codec protocol (`parse_str`, `parse_record_start`, `invalid_value`, ...) and each building block (`peek`, `parse_cbor_tag`, `parse_bytes`) gives `[InvalidCbor(U64), MissingRequiredField(Str)]`. Before, it gave `[InvalidCbor(U64)]`. |
+| `missing_field` | A new method of the codec protocol. The derived parser of a record calls it for an absent required field. It gives `MissingRequiredField(name)`, as before. |
+| `parse_tag_union` | Takes `Encoding.ParseTagUnionSpec(a, Cbor, Cbor.Reader, [InvalidCbor(U64), MissingRequiredField(Str)])`. The compiler type has 4 arguments now. |
+| Stream decoders | `Items.push`, `Items.from_stream`, `Entries.push` and `Entries.from_stream` take a type with `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]`, and give that error with `TooLarge(U64)` (and `NotStreamable`, `Input(e)`). Before, the parser of the type had to give `TooLarge` too. |
+| `Cbor.Raw.from_bytes` | No change: it gives `[InvalidCbor(U64)]`. |
+| Warnings | The 11-14 compiler warns when a member of a nested type has the name of a top-level definition. The private writer function `finish` is now `finish_output`. `Cbor.StreamWriter.finish` and the other `finish` methods do not change. |
+| Tests | The tests use the error type of the format. New tests: `MissingRequiredField` from `Items.push` and `Entries.push`, and the closed error type of `Raw.from_bytes`. `tests/wasm_dev/run.mjs` gives the imports `roc_dbg` and `roc_expect_failed` of the 11-14 compiler. Workarounds for 2 compiler issues (section "Known compiler issues"). |
+
+| Your code in 0.5.0 | In 0.5.1 |
+| --- | --- |
+| A `parser_for` of your own with `[InvalidCbor(U64)]` | `[InvalidCbor(U64), MissingRequiredField(Str)]`. A domain error goes into `InvalidCbor(pos)`, for example with `Cbor.invalid_value`. |
+| `r : Try(Cbor.Value, [InvalidCbor(U64)])` and a `match` with only `InvalidCbor` | `Try(Cbor.Value, [InvalidCbor(U64), MissingRequiredField(Str)])`, or `_`, and a branch for `MissingRequiredField` |
+| A `Try` of a read with more errors (`[InvalidCbor(U64), TooLarge(U64), ..]`) | The read gives the error type of the format. Map it into the wider union. |
+| `where [a.Cbor.Parseable([InvalidCbor(U64), TooLarge(U64), ..errs])]` for `Items.push` | `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]` |
+| `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]`, `Readable(errs)` | No change in the form |
+
 ### 0.5.0
 
 A strict reader, a checked writer and the fixes of an audit of 0.4.1.
@@ -1007,6 +1038,8 @@ A tag has no `v`: roc reads the version from the URL, and the tag is a segment o
 
 | Issue | Effect | Workaround |
 | --- | --- | --- |
+| No issue yet (the 11-14 nightly; not on `nightly-2026-11-07-ad3a5d2`) | In some programs, the method call `decoder.from_stream(source)` (also `Cbor.Items.array({}).from_stream(source)`) crashes the compiler: "eager procedure specialization request changed before final graph seal". `examples/stream.roc` is not affected. | The qualified call: `Cbor.Items.from_stream(decoder, source)` (`tests/stream_adapters.roc`, `tests/wasm_dev/app.roc`) |
+| No issue yet (the 11-14 nightly; not on `nightly-2026-11-07-ad3a5d2`) | A `match` on the result of a read gives a false warning, "unmatchable pattern", on `Err(MissingRequiredField(_))`. It occurs with a `match` directly on `Cbor.parse(bytes)` in a function with `where [a.Cbor.Readable(errs)]`, and with `r : Try({ a : U64, b : U64 }, _)`. The branch matches at run time. A warning makes `roc check` and `roc test` exit with an error. | Annotate the result first. In a generic function: `r : Try(a, _)` (section "`where` aliases"). For a concrete type: the error type in full, `r : Try({ a : U64, b : U64 }, [InvalidCbor(U64), MissingRequiredField(Str)])`. |
 | [roc-lang/roc#12917](https://github.com/roc-lang/roc/issues/12917) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | The drop of a value is recursive: dropping a `Cbor.Value` (or another recursive value) about 200,000 levels deep overflows the stack (fewer on arm64), also on an error path | The reader stops at `max_depth` (512). Do not build such values in app code. |
 | [roc-lang/roc#12919](https://github.com/roc-lang/roc/issues/12919) (`nightly-2026-10-19-601b54c` to `nightly-2026-11-07-ad3a5d2`) | A format with `encode_key_start` crashes the compiler (SIGSEGV) with a `Dict` key of a composite type. A tag union key then also needs `encode_key_str`. | The package has no `encode_key_start` and no `parse_key_start`: a composite key is a compile error |
 | No issue yet (`nightly-2026-10-19-601b54c`) | A record that holds the output list, read after a callback, keeps a second reference to the list, so the next append copies it (an encode of n items is O(n^2)). On the dev backend, `match d.list { Pending(n) => .., _ => o }` on a destructured writer also copied the list. | The writer reads no field after a callback, and uses `if` there. `scripts/scale.sh` checks each writer shape. |
