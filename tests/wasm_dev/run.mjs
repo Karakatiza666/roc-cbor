@@ -38,6 +38,14 @@ for (const [name, seed, want] of cases) {
     roc_crashed: (p, len) => {
       throw new Error(`roc crashed: ${new TextDecoder().decode(u8().slice(p, p + len))}`);
     },
+    // The 11-14 compiler imports roc_dbg and roc_expect_failed too. The app has no dbg and no expect, so they are
+    // never called.
+    roc_dbg: () => {
+      throw new Error('roc_dbg');
+    },
+    roc_expect_failed: () => {
+      throw new Error('roc_expect_failed');
+    },
   };
   const x = new WebAssembly.Instance(mod, { env }).exports;
   mem = x.memory;
