@@ -1228,7 +1228,7 @@ Cbor :: {
 	encode : a -> List(U8) where [a.Encodable([])]
 	encode = |value|
 		match Cbor.encode_item(value, new_writer(Snake)) {
-			Ok(w) if counts_match(w) => finish(w)
+			Ok(w) if counts_match(w) => finish_output(w)
 			_ => crash "Cbor.encode: an encoder_for wrote the wrong count of items (CountMismatch). Cbor.encode_try gives the error."
 		}
 
@@ -1238,7 +1238,7 @@ Cbor :: {
 	encode_try : a -> Try(List(U8), [CountMismatch, ..err]) where [a.Encodable([CountMismatch, ..err])]
 	encode_try = |value| {
 		w = Cbor.encode_item(value, new_writer(Snake))?
-		if (counts_match(w)) Ok(finish(w)) else Err(CountMismatch)
+		if (counts_match(w)) Ok(finish_output(w)) else Err(CountMismatch)
 	}
 
 	## `Cbor.encode_try` with options (`Cbor.WriteOptions`). `Err(DuplicateMapKey)`: two fields of one record have the same
@@ -1253,8 +1253,8 @@ Cbor :: {
 			return Err(DuplicateMapKey)
 		}
 		match options.?key_order ?? Given {
-			Given => Ok(finish(w))
-			Sorted => sort_maps(finish(w))
+			Given => Ok(finish_output(w))
+			Sorted => sort_maps(finish_output(w))
 		}
 	}
 
@@ -2395,8 +2395,8 @@ counts_match : Cbor.Writer -> Bool
 counts_match = |w| !w.st.bad and w.st.left == 0 and w.st.level == 0
 
 ## The output with the gaps of old record heads removed: one pass, in place.
-finish : Cbor.Writer -> List(U8)
-finish = |w| {
+finish_output : Cbor.Writer -> List(U8)
+finish_output = |w| {
 	{ out, st } = w
 	gaps = st.gaps.sort_with(|a, b| if (a.at < b.at) Before else if (a.at > b.at) After else Same)
 	match gaps.first() {
