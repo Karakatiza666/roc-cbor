@@ -30,6 +30,27 @@ Errs : [InvalidCbor(U64), TooLarge(U64), NotStreamable, MissingRequiredField(Str
 ## The errors of ByteChunks and TextChunks.
 ChunkErrs : [InvalidCbor(U64)]
 
+## The error of the format: each parser of a type has it. A stream decoder adds its own errors.
+Fmt : [InvalidCbor(U64), MissingRequiredField(Str)]
+
+## A read of the format with the error in the union of the decoders.
+wide : Try(a, Fmt) -> Try(a, Errs)
+wide = |r|
+	match r {
+		Ok(v) => Ok(v)
+		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
+		Err(MissingRequiredField(name)) => Err(MissingRequiredField(name))
+	}
+
+## A read of the format as a `List(U8)` or a `Str`: no record fields, so no `MissingRequiredField`.
+narrow : Try(a, Fmt) -> Try(a, ChunkErrs)
+narrow = |r|
+	match r {
+		Ok(v) => Ok(v)
+		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
+		Err(MissingRequiredField(_)) => Err(InvalidCbor(U64.highest))
+	}
+
 ## The properties that run: all of them. A check of the target against a planted bug turns the others off.
 run : { p1 : Bool, p2 : Bool, p3 : Bool }
 run = { p1: Bool.True, p2: Bool.True, p3: Bool.True }
@@ -135,7 +156,7 @@ splits = |bytes, seed| {
 
 ## The items that `start` gives with `chunks` one at a time (`push`), then `finish`: the items, or the error. The loop
 ## is bounded by the chunks; more than `step_limit` values is a crash.
-stream_items : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+stream_items : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Fmt)]
 stream_items = |start, chunks| {
 	var $d = start
 	var $values = []
@@ -156,7 +177,7 @@ stream_items = |start, chunks| {
 }
 
 ## The entries that `start` gives with `chunks`, then `finish`.
-stream_entries : Cbor.Entries, List(List(U8)) -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+stream_entries : Cbor.Entries, List(List(U8)) -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Fmt), k.Cbor.Encodable([]), v.Cbor.Parseable(Fmt)]
 stream_entries = |start, chunks| {
 	var $d = start
 	var $entries = []
@@ -319,7 +340,7 @@ items_in = |bytes, set| {
 	while $lo < $hi {
 		mid = ($lo + $hi) // 2
 		r : Try(Cbor.Value, Errs)
-		r = Cbor.parse_with(bytes, to_options({ ..set, max_depth: U64.highest, max_items: mid }))
+		r = wide(Cbor.parse_with(bytes, to_options({ ..set, max_depth: U64.highest, max_items: mid })))
 		if r.is_ok() {
 			$hi = mid
 		} else {
@@ -333,7 +354,7 @@ items_in = |bytes, set| {
 walk_value : List(U8), U64, OptSet, U64, U64 -> Try({ value : Cbor.Value, end : U64, count : U64 }, Errs)
 walk_value = |bytes, at, set, depth, count| {
 	r : Try({ value : Cbor.Value, rest : List(U8) }, Errs)
-	r = Cbor.parse_prefix_with(bytes.drop_first(at), item_options(set, depth, count))
+	r = wide(Cbor.parse_prefix_with(bytes.drop_first(at), item_options(set, depth, count)))
 	match r {
 		Ok(one) => {
 			end = bytes.len() - one.rest.len()
@@ -345,10 +366,10 @@ walk_value = |bytes, at, set, depth, count| {
 }
 
 ## The typed item from `start` to `end`, with the positions in all of `bytes`.
-typed_at : List(U8), U64, U64, OptSet, U64, U64 -> Try(a, Errs) where [a.Cbor.Parseable(Errs)]
+typed_at : List(U8), U64, U64, OptSet, U64, U64 -> Try(a, Errs) where [a.Cbor.Parseable(Fmt)]
 typed_at = |bytes, start, end, set, depth, count| {
 	r : Try({ value : a, rest : List(U8) }, Errs)
-	r = Cbor.parse_prefix_with(bytes.sublist({ start, len: end - start }), item_options(set, depth, count))
+	r = wide(Cbor.parse_prefix_with(bytes.sublist({ start, len: end - start }), item_options(set, depth, count)))
 	match r {
 		Ok(one) => Ok(one.value)
 		Err(InvalidCbor(p)) => Err(InvalidCbor(start + p))
@@ -361,7 +382,7 @@ after_root : List(U8), U64, b -> Try(b, Errs)
 after_root = |bytes, at, value| if (at < bytes.len()) Err(InvalidCbor(at)) else Ok(value)
 
 ## The model of `Items.array`: the root head, then parse_prefix_with for each item.
-array_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+array_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Fmt)]
 array_model = |bytes, set| {
 	root = root_model(bytes, set, 4) ? |p| InvalidCbor(p)
 	var $at = root.at
@@ -392,7 +413,7 @@ array_model = |bytes, set| {
 }
 
 ## The model of `Items.sequence` and `parse_sequence_with`: parse_prefix_with for each root item.
-sequence_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+sequence_model : List(U8), OptSet -> Try(List(a), Errs) where [a.Cbor.Parseable(Fmt)]
 sequence_model = |bytes, set| {
 	var $at = 0
 	var $values = []
@@ -424,7 +445,7 @@ before = |x, y| {
 Span : { key : U64, value : U64, end : U64, count : U64 }
 
 ## The typed key and value of an entry. The key reads only in the form that `Cbor.encode` writes for it.
-typed_entry : List(U8), Span, Cbor.Value, OptSet, U64 -> Try((k, v), Errs) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+typed_entry : List(U8), Span, Cbor.Value, OptSet, U64 -> Try((k, v), Errs) where [k.Cbor.Parseable(Fmt), k.Cbor.Encodable([]), v.Cbor.Parseable(Fmt)]
 typed_entry = |bytes, span, key_value, set, depth| {
 	key : k
 	key = typed_at(bytes, span.key, span.value, set, depth, span.count)?
@@ -439,7 +460,7 @@ typed_entry = |bytes, span, key_value, set, depth| {
 ## The model of `Entries.map`: the root head, then for each entry the walk of its key, the order and the duplicates of
 ## the Cbor.Value of the key (the encode bytes of `key_order: Sorted`, or the encode bytes for `Any`), the walk of its
 ## value, and the typed key and value. With `Sorted` and `Last`, an entry waits for a greater key or the end.
-entries_model : List(U8), OptSet -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+entries_model : List(U8), OptSet -> Try(List((k, v)), Errs) where [k.Cbor.Parseable(Fmt), k.Cbor.Encodable([]), v.Cbor.Parseable(Fmt)]
 entries_model = |bytes, set| {
 	sorted = set.key_order == Sorted
 	if set.duplicate_keys == Last and !sorted {
@@ -547,7 +568,7 @@ p1 = |name, whole, others|
 	}
 
 ## P1, P2 and P3 for `Items.array` and `Items.sequence` with items of type `a`. `read` is `parse_with` of a `List(a)`.
-check_items : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> {} where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+check_items : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> {} where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 check_items = |name, bytes, chunkings, set, read| {
 	options = to_options(set)
 	got : Try(List(a), Errs)
@@ -569,7 +590,7 @@ check_items = |name, bytes, chunkings, set, read| {
 			crash "P2 Items.array does not agree with parse_with: ${name}"
 		}
 		whole_seq : Try(List(a), Errs)
-		whole_seq = Cbor.parse_sequence_with(bytes, options)
+		whole_seq = wide(Cbor.parse_sequence_with(bytes, options))
 		if whole_seq != seq {
 			crash "P2 Items.sequence does not agree with parse_sequence_with: ${name}"
 		}
@@ -589,7 +610,7 @@ check_items = |name, bytes, chunkings, set, read| {
 }
 
 ## P1, P2 and P3 for `Entries.map` with keys `k` and values `v`. `read` is `parse_with` of a `Dict(k, v)`.
-check_entries : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(Dict(k, v), Errs)) -> {} where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, v.is_eq : v, v -> Bool]
+check_entries : Str, List(U8), List(List(List(U8))), OptSet, (List(U8), Cbor.Options -> Try(Dict(k, v), Errs)) -> {} where [k.Cbor.Parseable(Fmt), k.Cbor.Encodable([]), v.Cbor.Parseable(Fmt), k.is_eq : k, k -> Bool, k.to_hash : k, Hasher -> Hasher, v.is_eq : v, v -> Bool]
 check_entries = |name, bytes, chunkings, set, read| {
 	options = to_options(set)
 	got : Try(List((k, v)), Errs)
@@ -629,7 +650,7 @@ check_chunks = |bytes, chunkings, set| {
 	# max_buffer does not apply to ByteChunks and TextChunks: the small buffer sets add nothing here.
 	if run.p2 and set.max_buffer > 1_000 {
 		want_data : Try(List(U8), ChunkErrs)
-		want_data = Cbor.parse_with(bytes, options)
+		want_data = narrow(Cbor.parse_with(bytes, options))
 		# A List(U8) also reads an empty array (and an array of bytes with BytesFromArray): ByteChunks reads only a byte string,
 		# and another root is an error at its head. With a byte string root, the same result and error position.
 		data_ok = if (root_major(bytes, set) == 2) want_data == data else data.is_err()
@@ -637,7 +658,7 @@ check_chunks = |bytes, chunkings, set| {
 			crash "P2 ByteChunks does not agree with parse_with of a List(U8)"
 		}
 		want_text : Try(Str, ChunkErrs)
-		want_text = Cbor.parse_with(bytes, options)
+		want_text = narrow(Cbor.parse_with(bytes, options))
 		# Another root (after the tags of ignore_tags) is an error at its head in TextChunks, and parse_with walks it first:
 		# then only both Err. With a text root, the same error position.
 		text_ok =
@@ -653,25 +674,25 @@ check_chunks = |bytes, chunkings, set| {
 
 ## `parse_with` of a List(a) for each item type: a List(a) cannot be parsed in a generic function.
 values : List(U8), Cbor.Options -> Try(List(Cbor.Value), Errs)
-values = |b, o| Cbor.parse_with(b, o)
+values = |b, o| wide(Cbor.parse_with(b, o))
 
 rows : List(U8), Cbor.Options -> Try(List(Row), Errs)
-rows = |b, o| Cbor.parse_with(b, o)
+rows = |b, o| wide(Cbor.parse_with(b, o))
 
 wides : List(U8), Cbor.Options -> Try(List(U128), Errs)
-wides = |b, o| Cbor.parse_with(b, o)
+wides = |b, o| wide(Cbor.parse_with(b, o))
 
 dicts : List(U8), Cbor.Options -> Try(List(Dict(U64, Str)), Errs)
-dicts = |b, o| Cbor.parse_with(b, o)
+dicts = |b, o| wide(Cbor.parse_with(b, o))
 
 shapes : List(U8), Cbor.Options -> Try(List(Shape), Errs)
-shapes = |b, o| Cbor.parse_with(b, o)
+shapes = |b, o| wide(Cbor.parse_with(b, o))
 
 text_keys : List(U8), Cbor.Options -> Try(Dict(Str, U64), Errs)
-text_keys = |b, o| Cbor.parse_with(b, o)
+text_keys = |b, o| wide(Cbor.parse_with(b, o))
 
 int_keys : List(U8), Cbor.Options -> Try(Dict(U64, Cbor.Value), Errs)
-int_keys = |b, o| Cbor.parse_with(b, o)
+int_keys = |b, o| wide(Cbor.parse_with(b, o))
 
 ## Each decoder and each item type with one option set.
 check_set : List(U8), List(List(List(U8))), OptSet -> {}

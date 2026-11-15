@@ -18,6 +18,8 @@ value_at = |bytes, options| {
 	match r {
 		Ok(_) => Ok({})
 		Err(InvalidCbor(p)) => Err(At(p))
+		# The format error has this tag too. A `Cbor.Value` has no record fields.
+		Err(MissingRequiredField(_)) => Err(At(U64.highest))
 	}
 }
 
@@ -104,7 +106,8 @@ expect {
 	ok = Cbor.parse(rec_bytes)
 	var $typed = []
 	for n in 0..<rec_bytes.len() {
-		r : Try({ a : U64, bc : List(Bool) }, _)
+		# The error type in full: with `_`, the 11-14 compiler gives a false warning (unmatchable pattern) on `MissingRequiredField`.
+		r : Try({ a : U64, bc : List(Bool) }, [InvalidCbor(U64), MissingRequiredField(Str)])
 		r = Cbor.parse(rec_bytes.take_first(n))
 		p =
 			match r {

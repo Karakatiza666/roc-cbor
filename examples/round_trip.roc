@@ -25,7 +25,7 @@ Pkg : {
 Uuid := List(U8).{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Uuid, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
@@ -42,7 +42,7 @@ Uuid := List(U8).{
 
 ## A key that is a number or text: Cbor.peek picks the reader.
 Key := [Number(U64), Name(Str)].{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Key, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Key, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => Cbor.parse_u64(encoding, state).map_ok(|n| { value: Key.Number(n.value), rest: n.rest })
@@ -93,7 +93,8 @@ main! = |args| {
 	bytes = to_cbor(pkg)
 	echo!("encode: ${hex(bytes)}\n")
 
-	parsed : Try(Pkg, _)
+	# The error type in full: with `_`, the 11-14 compiler warns that the `MissingRequiredField` branch cannot match.
+	parsed : Try(Pkg, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parsed = from_cbor(bytes)
 	match parsed {
 		Ok(p) => echo!("parse: same=${Str.inspect(p == pkg)} size=${p.size.to_str()} digest=${hex(p.digest)}\n")

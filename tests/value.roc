@@ -320,6 +320,16 @@ expect Cbor.Raw.from_bytes(hex("a1616182f93e00f6")).map_ok(|r| r.to_bytes()) == 
 expect Cbor.Raw.from_bytes([]) == Err(InvalidCbor(0))
 expect Cbor.Raw.from_bytes(hex("0102")) == Err(InvalidCbor(1))
 expect Cbor.Raw.from_bytes(hex("1801")) == Err(InvalidCbor(0))
+
+## from_bytes keeps its closed error type in 0.5.1: a `Raw` has no record fields, so no `MissingRequiredField`.
+expect {
+	r : Try(Cbor.Raw, [InvalidCbor(U64)])
+	r = Cbor.Raw.from_bytes(hex("0102"))
+	match r {
+		Ok(_) => Bool.False
+		Err(InvalidCbor(p)) => p == 1
+	}
+}
 expect Cbor.Raw.from_bytes(hex("a2616101616102")) == Err(InvalidCbor(4))
 expect Cbor.Raw.from_bytes(hex("8201")) == Err(InvalidCbor(0))
 expect Cbor.Raw.from_bytes(hex("6261ff")) == Err(InvalidCbor(0))

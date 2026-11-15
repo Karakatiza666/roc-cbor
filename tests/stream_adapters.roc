@@ -15,6 +15,10 @@ import pkg.Cbor
 
 # Helpers
 
+# Each `from_stream` call is qualified, `Cbor.Items.from_stream(decoder, source)`: the 11-14 compiler panics on the
+# method call `decoder.from_stream(source)` ("eager procedure specialization request changed before final graph
+# seal"). README, section "Known compiler issues".
+
 hex_digit : U8 -> U8
 hex_digit = |c| if (c >= 97) c - 87 else c - 48
 
@@ -33,6 +37,9 @@ Fail : [Poison]
 
 ## The errors of the decoders in this file: a closed union, so that results compare with `==`.
 Errs : [InvalidCbor(U64), TooLarge(U64), NotStreamable, MissingRequiredField(Str), Input(Fail)]
+
+## The error of the format: each parser of a type has it. A stream decoder adds its own errors.
+Fmt : [InvalidCbor(U64), MissingRequiredField(Str)]
 
 ## The errors of the chunk decoders.
 ChunkErrs : [InvalidCbor(U64), Input(Fail)]
@@ -86,7 +93,7 @@ splits = |bytes| {
 # The push loops: the values of each `push` over the chunks, then the error of `push` or `finish`, as the adapter
 # gives them. Each loop is bounded by its chunks.
 
-push_items : Cbor.Items, List(List(U8)) -> List(Try(a, Errs)) where [a.Cbor.Parseable(Errs)]
+push_items : Cbor.Items, List(List(U8)) -> List(Try(a, Errs)) where [a.Cbor.Parseable(Fmt)]
 push_items = |start, chunks| {
 	var $d = start
 	var $out = []
@@ -122,7 +129,7 @@ push_items = |start, chunks| {
 	$out
 }
 
-push_entries : Cbor.Entries, List(List(U8)) -> List(Try((k, v), Errs)) where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs)]
+push_entries : Cbor.Entries, List(List(U8)) -> List(Try((k, v), Errs)) where [k.Cbor.Parseable(Fmt), k.Cbor.Encodable([]), v.Cbor.Parseable(Fmt)]
 push_entries = |start, chunks| {
 	var $d = start
 	var $out = []
@@ -240,12 +247,12 @@ read_fail! = || Err(Poison)
 # The properties: each split gives the events of the push loop.
 
 ## `Items.array` (or `sequence`) with `from_stream` gives the events of `push_items` for each split of `bytes`.
-items_agree! : Cbor.Items, List(U8), List(Try(a, Errs)) => Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+items_agree! : Cbor.Items, List(U8), List(Try(a, Errs)) => Bool where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 items_agree! = |start, bytes, want| {
 	var $all = push_items(start, [bytes]) == want
 	for chunks in splits(bytes) {
 		out : Stream(Try(a, Errs))
-		out = start.from_stream(source(chunks))
+		out = Cbor.Items.from_stream(start, source(chunks))
 		if drain!(out) != want or push_items(start, chunks) != want {
 			$all = Bool.False
 		}
@@ -253,12 +260,12 @@ items_agree! = |start, bytes, want| {
 	$all
 }
 
-entries_agree! : Cbor.Entries, List(U8), List(Try((k, v), Errs)) => Bool where [k.Cbor.Parseable(Errs), k.Cbor.Encodable([]), v.Cbor.Parseable(Errs), k.is_eq : k, k -> Bool, v.is_eq : v, v -> Bool]
+entries_agree! : Cbor.Entries, List(U8), List(Try((k, v), Errs)) => Bool where [k.Cbor.Parseable(Fmt), k.Cbor.Encodable([]), v.Cbor.Parseable(Fmt), k.is_eq : k, k -> Bool, v.is_eq : v, v -> Bool]
 entries_agree! = |start, bytes, want| {
 	var $all = push_entries(start, [bytes]) == want
 	for chunks in splits(bytes) {
 		out : Stream(Try((k, v), Errs))
-		out = start.from_stream(source(chunks))
+		out = Cbor.Entries.from_stream(start, source(chunks))
 		if drain!(out) != want or push_entries(start, chunks) != want {
 			$all = Bool.False
 		}
@@ -272,7 +279,7 @@ bytes_agree! = |bytes, options| {
 	var $all = Bool.True
 	for chunks in splits(bytes) {
 		start = Cbor.ByteChunks.new(options)
-		if drain!(start.from_stream(source(chunks))) != push_bytes(start, chunks) {
+		if drain!(Cbor.ByteChunks.from_stream(start, source(chunks))) != push_bytes(start, chunks) {
 			$all = Bool.False
 		}
 	}
@@ -284,7 +291,7 @@ text_agrees! = |bytes, options| {
 	var $all = Bool.True
 	for chunks in splits(bytes) {
 		start = Cbor.TextChunks.new(options)
-		if drain!(start.from_stream(source(chunks))) != push_text(start, chunks) {
+		if drain!(Cbor.TextChunks.from_stream(start, source(chunks))) != push_text(start, chunks) {
 			$all = Bool.False
 		}
 	}
@@ -340,41 +347,41 @@ checks! = |_| {
 	value_items = [Ok(Cbor.Value.Int(Cbor.IntValue.from_u64(1))), Ok(Cbor.Value.Text("a")), Err(InvalidCbor(4))]
 
 	from_bad : Stream(Try(U64, Errs))
-	from_bad = Cbor.Items.array({}).from_stream(source([hex("8301f6"), hex("02")]))
+	from_bad = Cbor.Items.from_stream(Cbor.Items.array({}), source([hex("8301f6"), hex("02")]))
 	from_bad_poison : Stream(Try(U64, Errs))
-	from_bad_poison = Cbor.Items.array({}).from_stream(failing([hex("8301f602")]))
+	from_bad_poison = Cbor.Items.from_stream(Cbor.Items.array({}), failing([hex("8301f602")]))
 	from_err : Stream(Try(U64, Errs))
-	from_err = Cbor.Items.array({}).from_stream(failing([hex("8201")]))
+	from_err = Cbor.Items.from_stream(Cbor.Items.array({}), failing([hex("8201")]))
 	from_err_first : Stream(Try(U64, Errs))
-	from_err_first = Cbor.Items.array({}).from_stream(failing([]))
+	from_err_first = Cbor.Items.from_stream(Cbor.Items.array({}), failing([]))
 	from_lazy : Stream(Try(U64, Errs))
-	from_lazy = Cbor.Items.sequence({}).from_stream(failing([hex("0102")]))
+	from_lazy = Cbor.Items.from_stream(Cbor.Items.sequence({}), failing([hex("0102")]))
 	from_lazy_cut : Stream(Try(U64, Errs))
-	from_lazy_cut = Cbor.Items.array({}).from_stream(failing([hex("83"), hex("01"), hex("0203")]))
+	from_lazy_cut = Cbor.Items.from_stream(Cbor.Items.array({}), failing([hex("83"), hex("01"), hex("0203")]))
 	from_empty : Stream(Try(U64, Errs))
-	from_empty = Cbor.Items.array({}).from_stream(source([]))
+	from_empty = Cbor.Items.from_stream(Cbor.Items.array({}), source([]))
 	from_empty_seq : Stream(Try(U64, Errs))
-	from_empty_seq = Cbor.Items.sequence({}).from_stream(source([]))
+	from_empty_seq = Cbor.Items.from_stream(Cbor.Items.sequence({}), source([]))
 	from_skip : Stream(Try(U64, Errs))
-	from_skip = Cbor.Items.array({}).from_stream(source([hex("83"), [], hex("01"), [], hex("0203")]).drop_if(|c| c == Ok([])))
+	from_skip = Cbor.Items.from_stream(Cbor.Items.array({}), source([hex("83"), [], hex("01"), [], hex("0203")]).drop_if(|c| c == Ok([])))
 	from_first : Stream(Try(U64, Errs))
-	from_first = Cbor.Items.array({}).from_stream(failing([hex("8301"), hex("02")])).take_first(1)
+	from_first = Cbor.Items.from_stream(Cbor.Items.array({}), failing([hex("8301"), hex("02")])).take_first(1)
 	from_too_large : Stream(Try(List(U64), Errs))
-	from_too_large = Cbor.Items.array({ max_buffer: 4 }).from_stream(source([hex("81"), hex("8401"), hex("0203"), hex("04")]))
+	from_too_large = Cbor.Items.from_stream(Cbor.Items.array({ max_buffer: 4 }), source([hex("81"), hex("8401"), hex("0203"), hex("04")]))
 	too_large : List(Try(List(U64), Errs))
 	too_large = [Err(TooLarge(1))]
 
 	# chunk_source: a read! function as a source.
 	from_ones : Stream(Try(U64, Errs))
-	from_ones = Cbor.Items.sequence({}).from_stream(Cbor.chunk_source(read_ones!)).take_first(3)
+	from_ones = Cbor.Items.from_stream(Cbor.Items.sequence({}), Cbor.chunk_source(read_ones!)).take_first(3)
 	from_read_fail : Stream(Try(U64, Errs))
-	from_read_fail = Cbor.Items.sequence({}).from_stream(Cbor.chunk_source(read_fail!))
+	from_read_fail = Cbor.Items.from_stream(Cbor.Items.sequence({}), Cbor.chunk_source(read_fail!))
 	from_many : Stream(Try(U64, Errs))
-	from_many = Cbor.Items.sequence({}).from_stream(failing([List.repeat(0x01, 1000)]))
+	from_many = Cbor.Items.from_stream(Cbor.Items.sequence({}), failing([List.repeat(0x01, 1000)]))
 	many : List(Try(U64, Errs))
 	many = List.repeat(Ok(1), 1000).append(Err(Input(Poison)))
 	from_before : Stream(Try(U64, Errs))
-	from_before = Cbor.Items.sequence({}).from_stream(failing([hex("01021c")]))
+	from_before = Cbor.Items.from_stream(Cbor.Items.sequence({}), failing([hex("01021c")]))
 
 	# Entries.
 	map_ab = hex("a2616101616202")
@@ -387,16 +394,16 @@ checks! = |_| {
 	entry_err : List(Try((Str, U64), Errs))
 	entry_err = [Ok(("a", 1)), Err(Input(Poison))]
 	from_entry_err : Stream(Try((Str, U64), Errs))
-	from_entry_err = Cbor.Entries.map({}).from_stream(failing([hex("a2616101"), hex("6162")]))
+	from_entry_err = Cbor.Entries.from_stream(Cbor.Entries.map({}), failing([hex("a2616101"), hex("6162")]))
 	from_entry_empty : Stream(Try((Str, U64), Errs))
-	from_entry_empty = Cbor.Entries.map({}).from_stream(source([]))
+	from_entry_empty = Cbor.Entries.from_stream(Cbor.Entries.map({}), source([]))
 	# NotStreamable from `finish`: an empty source gives no push.
 	from_last_empty : Stream(Try((Str, U64), Errs))
-	from_last_empty = Cbor.Entries.map({ duplicate_keys: Last }).from_stream(source([]))
+	from_last_empty = Cbor.Entries.from_stream(Cbor.Entries.map({ duplicate_keys: Last }), source([]))
 	entry_empty : List(Try((Str, U64), Errs))
 	entry_empty = [Err(InvalidCbor(0))]
 	from_tagged_key : Stream(Try((Str, U64), Errs))
-	from_tagged_key = Cbor.Entries.map({ ignore_tags: [6] }).from_stream(source([hex("a1c6616101")]))
+	from_tagged_key = Cbor.Entries.from_stream(Cbor.Entries.map({ ignore_tags: [6] }), source([hex("a1c6616101")]))
 
 	# ByteChunks and TextChunks.
 	bytes_def = hex("4a00010203040506070809")
@@ -455,7 +462,7 @@ checks! = |_| {
 	round_source : Stream(Try(List(U8), Fail))
 	round_source = Stream.from_iter(write_rows.map(|p| p.map_err(|_| Poison)).iter())
 	round_rows : Stream(Try(Row, Errs))
-	round_rows = Cbor.Items.array({}).from_stream(round_source)
+	round_rows = Cbor.Items.from_stream(Cbor.Items.array({}), round_source)
 
 	# A 9-byte head: the head of a byte string of 2^32 bytes, then the source fails, before any data.
 	big_head : List(Try(List(U8), [CountMismatch, Input(Fail)]))
@@ -483,8 +490,8 @@ checks! = |_| {
 		("items: take_first(1)", drain!(from_first) == [Ok(1)]),
 		("items: max_buffer", drain!(from_too_large) == too_large),
 		("chunk_source: each read! is a chunk, lazily", drain!(from_ones) == [Ok(1), Ok(1), Ok(1)]),
-		("chunk_source: an empty chunk ends", drain!(Cbor.Items.sequence({}).from_stream(Cbor.chunk_source(read_end!))) == no_u64),
-		("chunk_source: an empty chunk ends, a cut array", drain!(Cbor.Items.array({}).from_stream(Cbor.chunk_source(read_end!))) == empty_array),
+		("chunk_source: an empty chunk ends", drain!(Cbor.Items.from_stream(Cbor.Items.sequence({}), Cbor.chunk_source(read_end!))) == no_u64),
+		("chunk_source: an empty chunk ends, a cut array", drain!(Cbor.Items.from_stream(Cbor.Items.array({}), Cbor.chunk_source(read_end!))) == empty_array),
 		("chunk_source: a read! error is the last item", drain!(Cbor.chunk_source(read_fail!)) == [Err(Poison)]),
 		("chunk_source: a read! error is Input", drain!(from_read_fail) == [Err(Input(Poison))]),
 		("items: one chunk of many items, one at a time", drain!(from_many) == many),
@@ -502,16 +509,16 @@ checks! = |_| {
 		("bytes: indefinite, each split", bytes_agree!(bytes_indef, indefinite)),
 		("bytes: cut, each split", bytes_agree!(hex("4a000102"), {})),
 		("bytes: text root, each split", bytes_agree!(hex("6161"), {})),
-		("bytes: joined", joined(drain!(Cbor.ByteChunks.new({}).from_stream(source(bytes_def.chunks_of(3))))) == Ok(bytes_def.drop_first(1))),
-		("bytes: source error after the data so far", drain!(Cbor.ByteChunks.new({}).from_stream(failing([hex("4300"), hex("01")]))) == [Ok([0]), Ok([1]), Err(Input(Poison))]),
-		("bytes: empty source", drain!(Cbor.ByteChunks.new({}).from_stream(source([]))) == [Err(InvalidCbor(0))]),
-		("bytes: empty byte string", drain!(Cbor.ByteChunks.new({}).from_stream(source([[0x40]]))) == []),
+		("bytes: joined", joined(drain!(Cbor.ByteChunks.from_stream(Cbor.ByteChunks.new({}), source(bytes_def.chunks_of(3))))) == Ok(bytes_def.drop_first(1))),
+		("bytes: source error after the data so far", drain!(Cbor.ByteChunks.from_stream(Cbor.ByteChunks.new({}), failing([hex("4300"), hex("01")]))) == [Ok([0]), Ok([1]), Err(Input(Poison))]),
+		("bytes: empty source", drain!(Cbor.ByteChunks.from_stream(Cbor.ByteChunks.new({}), source([]))) == [Err(InvalidCbor(0))]),
+		("bytes: empty byte string", drain!(Cbor.ByteChunks.from_stream(Cbor.ByteChunks.new({}), source([[0x40]]))) == []),
 		("text: code points cut, each split", text_agrees!(text_cut, {})),
 		("text: invalid UTF-8, each split", text_agrees!(text_bad, {})),
 		("text: indefinite, each split", text_agrees!(hex("7f626161626262ff"), indefinite)),
-		("text: euro sign cut", drain!(Cbor.TextChunks.new({}).from_stream(source([hex("6561e2"), hex("82ac62")]))) == [Ok("a"), Ok("€b")]),
-		("text: source error", drain!(Cbor.TextChunks.new({}).from_stream(failing([hex("6261")]))) == [Ok("a"), Err(Input(Poison))]),
-		("text: empty source", drain!(Cbor.TextChunks.new({}).from_stream(source([]))) == [Err(InvalidCbor(0))]),
+		("text: euro sign cut", drain!(Cbor.TextChunks.from_stream(Cbor.TextChunks.new({}), source([hex("6561e2"), hex("82ac62")]))) == [Ok("a"), Ok("€b")]),
+		("text: source error", drain!(Cbor.TextChunks.from_stream(Cbor.TextChunks.new({}), failing([hex("6261")]))) == [Ok("a"), Err(Input(Poison))]),
+		("text: empty source", drain!(Cbor.TextChunks.from_stream(Cbor.TextChunks.new({}), source([]))) == [Err(InvalidCbor(0))]),
 		("array_stream: Indefinite", write_indef == [Ok([0x9f]), Ok([1]), Ok([2]), Ok([3]), Ok([0xff])]),
 		("array_stream: Count", write_count == [Ok([0x83]), Ok([1]), Ok([2]), Ok([3])]),
 		("array_stream: one item too many", write_more == [Ok([0x82]), Ok([1]), Ok([2]), Err(CountMismatch)]),

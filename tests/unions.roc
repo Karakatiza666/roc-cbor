@@ -151,7 +151,7 @@ expect {
 Id := U64.{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		tag = Cbor.parse_cbor_tag(encoding, state)?
 		if tag.value != 37 {
@@ -165,7 +165,7 @@ Id := U64.{
 Cell := [Number(I64), Word(Str)].{
 	is_eq : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Cell, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state|
 		match Cbor.peek(encoding, state)? {
 			Int => {

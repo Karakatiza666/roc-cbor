@@ -27,9 +27,21 @@ hex = |s|
 ## The errors of each read in this file: a closed union, so that results compare with `==`.
 Errs : [InvalidCbor(U64), TooLarge(U64), MissingRequiredField(Str)]
 
+## The error of the format: each parser of a type has it. A stream decoder adds `TooLarge`.
+Fmt : [InvalidCbor(U64), MissingRequiredField(Str)]
+
+## A read of the format with the error in the union of the tests.
+wide : Try(a, Fmt) -> Try(a, Errs)
+wide = |r|
+	match r {
+		Ok(v) => Ok(v)
+		Err(InvalidCbor(p)) => Err(InvalidCbor(p))
+		Err(MissingRequiredField(name)) => Err(MissingRequiredField(name))
+	}
+
 ## The items that `start` gives when it gets `chunks` one at a time with `push`, then `finish`. `end` is `Ok` after
 ## `finish`, else the error. The loop is bounded by the chunks.
-drive : Cbor.Items, List(List(U8)) -> { values : List(a), end : Try({}, Errs) } where [a.Cbor.Parseable(Errs)]
+drive : Cbor.Items, List(List(U8)) -> { values : List(a), end : Try({}, Errs) } where [a.Cbor.Parseable(Fmt)]
 drive = |start, chunks| {
 	var $items = start
 	var $values = []
@@ -68,7 +80,7 @@ finished = |r|
 	}
 
 ## The result of `drive` as one `Try`: the items, or the error.
-stream : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+stream : Cbor.Items, List(List(U8)) -> Try(List(a), Errs) where [a.Cbor.Parseable(Fmt)]
 stream = |start, chunks| {
 	r = drive(start, chunks)
 	match r.end {
@@ -98,7 +110,7 @@ splits = |bytes| {
 }
 
 ## Each split of `bytes` given to `start` gives `want`.
-each_split : Cbor.Items, List(U8), Try(List(a), Errs) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+each_split : Cbor.Items, List(U8), Try(List(a), Errs) -> Bool where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 each_split = |start, bytes, want| {
 	var $all = Bool.True
 	for chunks in splits(bytes) {
@@ -113,21 +125,21 @@ each_split = |start, bytes, want| {
 
 ## `Items.array` agrees with `parse_with` as a `List(a)` for each split of `bytes`.
 ## `read` is `parse_with` for one item type (a `List(a)` cannot be parsed in a generic function).
-array_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+array_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 array_agrees = |bytes, options, read| {
 	want = read(bytes, options)
 	each_split(Cbor.Items.array(options), bytes, want)
 }
 
 ## A model of `parse_sequence_with`: `parse_prefix_with` for each item. The positions are in all of `bytes`.
-sequence_model : List(U8), Cbor.Options -> Try(List(a), Errs) where [a.Cbor.Parseable(Errs)]
+sequence_model : List(U8), Cbor.Options -> Try(List(a), Errs) where [a.Cbor.Parseable(Fmt)]
 sequence_model = |bytes, options| {
 	var $rest = bytes
 	var $values = []
 	while !$rest.is_empty() {
 		at = bytes.len() - $rest.len()
 		r : Try({ value : a, rest : List(U8) }, Errs)
-		r = Cbor.parse_prefix_with($rest, options)
+		r = wide(Cbor.parse_prefix_with($rest, options))
 		match r {
 			Ok(one) => {
 				$values = $values.append(one.value)
@@ -141,12 +153,12 @@ sequence_model = |bytes, options| {
 }
 
 ## `Items.sequence` and `parse_sequence_with` agree with the model for each split of `bytes`.
-sequence_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+sequence_agrees : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 sequence_agrees = |bytes, options, _read| {
 	want : Try(List(a), Errs)
 	want = sequence_model(bytes, options)
 	whole : Try(List(a), Errs)
-	whole = Cbor.parse_sequence_with(bytes, options)
+	whole = wide(Cbor.parse_sequence_with(bytes, options))
 	whole == want and each_split(Cbor.Items.sequence(options), bytes, want)
 }
 
@@ -155,7 +167,7 @@ split_u64s : Cbor.Items, List(U8), Try(List(U64), Errs) -> Bool
 split_u64s = |start, bytes, want| each_split(start, bytes, want)
 
 ## `array_agrees` for `bytes` and for each prefix of it (a cut input).
-array_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+array_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 array_prefixes_agree = |bytes, options, type| {
 	var $all = Bool.True
 	for n in 0..=bytes.len() {
@@ -167,7 +179,7 @@ array_prefixes_agree = |bytes, options, type| {
 }
 
 ## `sequence_agrees` for `bytes` and for each prefix of it.
-sequence_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Errs), a.is_eq : a, a -> Bool]
+sequence_prefixes_agree : List(U8), Cbor.Options, (List(U8), Cbor.Options -> Try(List(a), Errs)) -> Bool where [a.Cbor.Parseable(Fmt), a.is_eq : a, a -> Bool]
 sequence_prefixes_agree = |bytes, options, type| {
 	var $all = Bool.True
 	for n in 0..=bytes.len() {
@@ -185,16 +197,16 @@ rows = Cbor.encode([{ id: 1, name: "a" }, { id: 300, name: "bb" }, { id: 70000, 
 
 ## `parse_with` for each item type of the tests. Only the type matters to `sequence_agrees`.
 u64s : List(U8), Cbor.Options -> Try(List(U64), Errs)
-u64s = |b, o| Cbor.parse_with(b, o)
+u64s = |b, o| wide(Cbor.parse_with(b, o))
 
 texts : List(U8), Cbor.Options -> Try(List(Str), Errs)
-texts = |b, o| Cbor.parse_with(b, o)
+texts = |b, o| wide(Cbor.parse_with(b, o))
 
 row_type : List(U8), Cbor.Options -> Try(List(Row), Errs)
-row_type = |b, o| Cbor.parse_with(b, o)
+row_type = |b, o| wide(Cbor.parse_with(b, o))
 
 values : List(U8), Cbor.Options -> Try(List(Cbor.Value), Errs)
-values = |b, o| Cbor.parse_with(b, o)
+values = |b, o| wide(Cbor.parse_with(b, o))
 
 indefinite : Cbor.Options
 indefinite = { allow: [IndefiniteLength] }
@@ -408,7 +420,7 @@ expect {
 	bad = Cbor.encode([{ id: 1, name: "a" }, { id: 2, name: "b" }]).concat(Cbor.encode({ id: "x", name: "c" }))
 	bytes = [0x83].concat(bad.drop_first(1))
 	want : Try(List(Row), Errs)
-	want = Cbor.parse(bytes)
+	want = wide(Cbor.parse(bytes))
 	r = drive(Cbor.Items.array({}), bytes.chunks_of(3))
 	got : List(Row)
 	got = r.values
@@ -446,7 +458,7 @@ expect {
 expect {
 	bytes = hex("00190100")
 	a : Try(List(U64), Errs)
-	a = Cbor.parse_sequence_with(bytes, { max_buffer: 2 })
+	a = wide(Cbor.parse_sequence_with(bytes, { max_buffer: 2 }))
 	split_u64s(Cbor.Items.sequence({ max_buffer: 3 }), bytes, Ok([0, 256])) and split_u64s(Cbor.Items.sequence({ max_buffer: 2 }), bytes, Err(TooLarge(1))) and a == Ok([0, 256])
 }
 
@@ -542,7 +554,7 @@ expect {
 	a : Try(List(Pay), Errs)
 	a = stream(Cbor.Items.array(kind), bytes.chunks_of(1))
 	pays : List(U8), Cbor.Options -> Try(List(Pay), Errs)
-	pays = |b, o| Cbor.parse_with(b, o)
+	pays = |b, o| wide(Cbor.parse_with(b, o))
 	a == Ok([Cash, Card({ last4: "42" }), Check(7)]) and array_agrees(bytes, kind, pays)
 }
 
@@ -551,4 +563,13 @@ expect {
 	a : Try(List(Cbor.Raw), Errs)
 	a = stream(Cbor.Items.array({}), bytes.chunks_of(2))
 	a.map_ok(|l| l.map(|r| r.to_bytes())) == Ok([[0x01], [0x81, 0x02], hex("a161616162")])
+}
+
+## A record item with no key for a field: `MissingRequiredField` in `rest`, as from `parse_with`. The parser of the item
+## gives the error type of the format, and `push` adds `TooLarge` to it (0.5.1).
+expect {
+	bytes = Cbor.encode([{ id: 1.U64 }])
+	r : { values : List(Row), rest : Try(Cbor.Items, Errs) }
+	r = Cbor.Items.array({}).push(bytes)
+	r.values == [] and r.rest.map_ok(|_| {}) == Err(MissingRequiredField("name")) and row_type(bytes, {}) == Err(MissingRequiredField("name"))
 }

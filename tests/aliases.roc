@@ -7,12 +7,12 @@ import pkg.Cbor
 
 Row : { id : U64, name : Str }
 
-## A type of your own with a hand-written reader. Its error type is closed.
+## A type of your own with a hand-written reader. Its error type is the closed error type of the format.
 Id := U64.{
 	is_eq : _
 	encoder_for : _
 
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Id, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| {
 		inner = U64.parser_for(encoding)
 		|state| {
@@ -24,13 +24,17 @@ Id := U64.{
 
 ## A function with Readable. It matches MissingRequiredField(field) and InvalidCbor(pos) in the generic code.
 read_text : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
-read_text = |bytes|
-	match Cbor.parse(bytes) {
+read_text = |bytes| {
+	# The annotation of the result: the 11-14 compiler gives a false warning (unmatchable pattern) on a `match` of the call.
+	r : Try(a, _)
+	r = Cbor.parse(bytes)
+	match r {
 		Ok(v) => Ok(v)
 		Err(MissingRequiredField(field)) => Err("missing ${field}")
 		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
 		Err(_) => Err("other")
 	}
+}
 
 ## A function with Writable.
 write_all : List(a) -> List(List(U8)) where [a.Cbor.Writable]

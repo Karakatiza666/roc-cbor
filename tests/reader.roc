@@ -15,7 +15,7 @@ with_x : List(U8) -> List(U8)
 with_x = |item| [0xa2, 0x61, 0x61, 0x01, 0x61, 0x78].concat(item)
 
 ## The result of three readers for the same bytes: a record that skips `x`, a `Cbor.Value`, `path_at` of the item.
-Agree : { record : Try(R, [InvalidCbor(U64), MissingRequiredField(Str)]), value : Try(Cbor.Value, [InvalidCbor(U64)]), path : Try(List(Cbor.Step), [NotFound]) }
+Agree : { record : Try(R, [InvalidCbor(U64), MissingRequiredField(Str)]), value : Try(Cbor.Value, [InvalidCbor(U64), MissingRequiredField(Str)]), path : Try(List(Cbor.Step), [NotFound]) }
 
 readers : List(U8) -> Agree
 readers = |item| {
@@ -313,7 +313,7 @@ expect parse_tree(tree_tag_first(256)).map_ok(|_| {}) == Err(InvalidCbor(256 * 1
 ## Two items read as one by a parser of your own. `parse_prefix` walks only the first item, so the second one is
 ## not walked: each check of the text must still be in the reader of `Cbor.Value` and of `Str`.
 TwoItems := (Cbor.Value, Cbor.Value).{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoItems, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoItems, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		first : { value : Cbor.Value, rest : Cbor.Reader }
 		first = Cbor.parse_item(encoding, state)?
@@ -324,7 +324,7 @@ TwoItems := (Cbor.Value, Cbor.Value).{
 }
 
 TwoTexts := (Str, Str).{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoTexts, rest : Cbor.Reader }, [InvalidCbor(U64)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : TwoTexts, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
 	parser_for = |encoding| |state| {
 		first = Cbor.parse_str(encoding, state)?
 		second = Cbor.parse_str(encoding, first.rest)?

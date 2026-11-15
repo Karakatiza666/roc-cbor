@@ -216,7 +216,7 @@ p4 = |vs, seed, sorted| {
 				if st.w.finish() != Ok({}) {
 					crash "P4: finish gives Err after one whole item"
 				}
-				back : Try(Cbor.Value, [InvalidCbor(U64)])
+				back : Try(Cbor.Value, [InvalidCbor(U64), MissingRequiredField(Str)])
 				back = Cbor.parse_with(st.out, read_options(sorted, st.indefinite))
 				match back {
 					Ok(b) if same(b, v, sorted) => {}
@@ -226,7 +226,7 @@ p4 = |vs, seed, sorted| {
 			Err(_) => crash "P4: the writer refuses a valid step"
 		}
 		if sorted {
-			sorted_back : Try(Cbor.Value, [InvalidCbor(U64)])
+			sorted_back : Try(Cbor.Value, [InvalidCbor(U64), MissingRequiredField(Str)])
 			sorted_back = Cbor.parse_with(sorted_key(v), { key_order: Sorted })
 			if sorted_back.map_ok(|b| same(b, v, sorted)) != Ok(Bool.True) {
 				crash "P4: encode_with key_order: Sorted does not read with key_order: Sorted"
@@ -245,7 +245,7 @@ p4 = |vs, seed, sorted| {
 	if $st.w.finish() != Ok({}) {
 		crash "P4: finish of a sequence gives Err"
 	}
-	back : Try(List(Cbor.Value), [InvalidCbor(U64)])
+	back : Try(List(Cbor.Value), [InvalidCbor(U64), MissingRequiredField(Str)])
 	back = Cbor.parse_sequence_with($st.out, read_options(sorted, $st.indefinite))
 	ok =
 		match back {
@@ -334,11 +334,11 @@ p5 = |seed, sorted, sequence| {
 		read = { allow: [IndefiniteLength], key_order: if (sorted) Sorted else Any, duplicate_keys: if (sorted) Reject else First }
 		valid =
 			if sequence {
-				all : Try(List(Cbor.Value), [InvalidCbor(U64)])
+				all : Try(List(Cbor.Value), [InvalidCbor(U64), MissingRequiredField(Str)])
 				all = Cbor.parse_sequence_with($st.out, read)
 				all.is_ok()
 			} else {
-				one : Try(Cbor.Value, [InvalidCbor(U64)])
+				one : Try(Cbor.Value, [InvalidCbor(U64), MissingRequiredField(Str)])
 				one = Cbor.parse_with($st.out, read)
 				one.is_ok()
 			}
