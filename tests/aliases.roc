@@ -25,7 +25,7 @@ Id := U64.{
 ## A function with Readable. It matches MissingRequiredField(field) and InvalidCbor(pos) in the generic code.
 read_text : List(U8) -> Try(a, Str) where [a.Cbor.Readable(errs)]
 read_text = |bytes| {
-	# The annotation of the result: the 11-14 compiler gives a false warning (unmatchable pattern) on a `match` of the call.
+	# The annotation of the result: the 11-14 compiler gives a false warning (unmatchable pattern) on a `match` of the call (roc-lang/roc#13105).
 	r : Try(a, _)
 	r = Cbor.parse(bytes)
 	match r {

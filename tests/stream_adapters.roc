@@ -17,7 +17,7 @@ import pkg.Cbor
 
 # Each `from_stream` call is qualified, `Cbor.Items.from_stream(decoder, source)`: the 11-14 compiler panics on the
 # method call `decoder.from_stream(source)` ("eager procedure specialization request changed before final graph
-# seal"). README, section "Known compiler issues".
+# seal", roc-lang/roc#13101).
 
 hex_digit : U8 -> U8
 hex_digit = |c| if (c >= 97) c - 87 else c - 48

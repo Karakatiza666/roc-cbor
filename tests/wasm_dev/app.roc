@@ -110,7 +110,7 @@ adapter! = |input, n, b| {
 	chunks : Stream(Try(List(U8), [Cut]))
 	chunks = Stream.from_iter(input.chunks_of(3).map(|c| Ok(c)).iter())
 	rows : Stream(Try(Row, _))
-	# Qualified: the 11-14 compiler panics on the method call `decoder.from_stream(source)` (README, "Known compiler issues").
+	# Qualified: the 11-14 compiler panics on the method call `decoder.from_stream(source)` (roc-lang/roc#13101).
 	rows = Cbor.Items.from_stream(Cbor.Items.array({}), chunks)
 	var $out = []
 	for! r in rows {

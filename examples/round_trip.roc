@@ -93,7 +93,7 @@ main! = |args| {
 	bytes = to_cbor(pkg)
 	echo!("encode: ${hex(bytes)}\n")
 
-	# The error type in full: with `_`, the 11-14 compiler warns that the `MissingRequiredField` branch cannot match.
+	# The error type in full: with `_`, the 11-14 compiler warns that the `MissingRequiredField` branch cannot match (roc-lang/roc#13105).
 	parsed : Try(Pkg, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parsed = from_cbor(bytes)
 	match parsed {
