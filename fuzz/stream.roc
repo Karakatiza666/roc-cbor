@@ -1,5 +1,5 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pkg: "../src/main.roc",
 }
 
@@ -794,6 +794,7 @@ input = Fuzz.map2(Fuzz.u64, Fuzz.raw_bytes, |seed, bytes| { seed, bytes })
 
 target = Fuzz.target_with!({
 	name: "stream",
+	examples: [],
 	generator: input,
 	test!,
 	show: |g| Str.inspect(g),

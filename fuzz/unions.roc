@@ -1,8 +1,9 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pkg: "../src/main.roc",
 }
 
+import fuzz.Arbitrary
 import fuzz.Fuzz
 import pkg.Cbor
 
@@ -207,8 +208,21 @@ sample_value = |u, s|
 		("acts", Doc.Arr(s.acts.map(|x| act_value(u, x)))),
 	])
 
-test! : { sample : Sample, layout : Layout } => Fuzz.Outcome
-test! = |g| {
+## roc-fuzz 0.6 saves an input in its own Binary format, which a value with the codec
+## methods of Cbor cannot use. So the input of the target is the raw bytes, and `generated`
+## makes the value from them with the generator.
+generated : List(U8) -> { sample : Sample, layout : Layout }
+generated = |entropy| {
+	generator = {
+		sample: { shape, shapes: Fuzz.list(shape, 3), act, acts: Fuzz.list(act, 3) }.Fuzz,
+		layout,
+	}.Fuzz
+	generator(Arbitrary.new(entropy)).value
+}
+
+test! : List(U8) => Fuzz.Outcome
+test! = |entropy| {
+	g = generated(entropy)
 	value = g.sample
 	# The writer gives the external form, and it reads back.
 	back : Try(Sample, _)
@@ -236,10 +250,8 @@ test! = |g| {
 
 target = Fuzz.target_with!({
 	name: "unions",
-	generator: {
-		sample: { shape, shapes: Fuzz.list(shape, 3), act, acts: Fuzz.list(act, 3) }.Fuzz,
-		layout,
-	}.Fuzz,
+	examples: [],
+	generator: Fuzz.raw_bytes,
 	test!,
-	show: |g| Str.inspect(g),
+	show: |entropy| Str.inspect(generated(entropy)),
 })

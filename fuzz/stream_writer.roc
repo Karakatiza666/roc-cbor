@@ -1,8 +1,9 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pkg: "../src/main.roc",
 }
 
+import fuzz.Arbitrary
 import fuzz.Fuzz
 import pkg.Cbor
 
@@ -399,8 +400,15 @@ rand_value = |s0, depth| {
 	}
 }
 
-test! : { seed : U64, values : List(Cbor.Value) } => Fuzz.Outcome
-test! = |g| {
+## roc-fuzz 0.6 saves an input in its own Binary format, which a value with the codec
+## methods of Cbor cannot use. So the input of the target is the raw bytes, and `generated`
+## makes the value from them with the generator.
+generated : List(U8) -> { seed : U64, values : List(Cbor.Value) }
+generated = |entropy| input(Arbitrary.new(entropy)).value
+
+test! : List(U8) => Fuzz.Outcome
+test! = |entropy| {
+	g = generated(entropy)
 	(extra, _) = rand_value(g.seed.bitwise_xor(4), 3)
 	(other, _) = rand_value(g.seed.bitwise_xor(5), 3)
 	values = g.values.concat([extra, other])
@@ -463,7 +471,8 @@ input = Fuzz.map2(Fuzz.u64, Fuzz.list(any_value(3), 4), |seed, values| { seed, v
 
 target = Fuzz.target_with!({
 	name: "stream-writer",
-	generator: input,
+	examples: [],
+	generator: Fuzz.raw_bytes,
 	test!,
-	show: |g| Str.inspect(g),
+	show: |entropy| Str.inspect(generated(entropy)),
 })

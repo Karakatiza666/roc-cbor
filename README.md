@@ -801,6 +801,7 @@ A port to the derived parsers of the 11-14 nightly (`nightly-2026-11-14-a87808d`
 | `Cbor.Raw.from_bytes` | No change: it gives `[InvalidCbor(U64)]`. |
 | Warnings | The 11-14 compiler warns when a member of a nested type has the name of a top-level definition. The private writer function `finish` is now `finish_output`. `Cbor.StreamWriter.finish` and the other `finish` methods do not change. |
 | CI nightly | `.roc-version` is `nightly-2026-11-15-f25da45`. |
+| Fuzz | roc-fuzz 0.6.2 (0.4.3 does not link on nightlies from 2026-11-10, which make PIE executables). The input of a target is its raw bytes, and the target makes its value with the generator: roc-fuzz 0.6 saves an input in its own Binary format, which a type with the codec methods of Cbor cannot use. |
 | Tests | The tests use the error type of the format. New tests: `MissingRequiredField` from `Items.push` and `Entries.push`, and the closed error type of `Raw.from_bytes`. `tests/wasm_dev/run.mjs` gives the imports `roc_dbg` and `roc_expect_failed` of the 11-14 compiler. Workarounds for 2 compiler issues (section "Known compiler issues"). |
 
 | Your code in 0.5.0 | In 0.5.1 |
@@ -976,7 +977,7 @@ Each fix of 0.5.0 has a regression test, and each test was checked against the c
 
 | Script | Checks |
 | --- | --- |
-| `scripts/fuzz.sh [runs]` | The property tests with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.4.3: a fixed count of inputs for each target in `fuzz/` (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`). Linux x86-64 and macOS arm64 only. A failure is saved in `.cache/fuzz/art-<target>/`. |
+| `scripts/fuzz.sh [runs]` | The property tests with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.6.2: a fixed count of inputs for each target in `fuzz/` (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`). Linux x86-64 and macOS arm64 only. The report of a run, with a failing input, is in `.cache/fuzz/report-<target>/`. |
 | `scripts/scale.sh [runs]` | Complexity. Each case of `bench/scale.roc` (writer), `bench/scale_read.roc` (reader) and `bench/scale_stream.roc` (the `Stream` adapters) is its own app (`--opt=speed`), at 5k, 10k, 20k and 40k items. The time for each item must not grow more than 2.5x (n log n for a key sort, depth for the depth cases). It fails on 0.4.1 (internal unions), on a quadratic duplicate check, on a decoder that is kept and pushed again, on a walk of the open item from its start at each chunk, and on a linear scan of the keys of a streamed map. Table "Stream scale cases". |
 | `scripts/bench.sh [--check \| --update] [runs]` | Speed of `bench/bench.roc`: 0.4.1 against HEAD, or HEAD against `bench/baseline.txt` (each time divided by the time of a `calib` case; a case fails above 1.5x) |
 | `scripts/differential.sh [count] [seed]` | `Cbor.Value` against Python `cbor2` 6.2.1 on the fuzz corpus, the RFC vectors and random items with mutations. A difference that is not in the table of `differential/differential.py` fails. `DIFF_STRICT=1`: padded numbers (no `PaddedNumbers`) are an expected difference. |

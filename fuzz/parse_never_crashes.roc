@@ -1,5 +1,5 @@
 app [target] {
-	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.4.3/41NK5FShyGC9Z8HNpUdUeXMWwLmLNfFxsfmLvdPL4Fxb.tar.zst",
+	fuzz: platform "https://github.com/lukewilliamboswell/roc-fuzz/releases/download/0.6.2/3kyiehxxzwAsjM23uCQGJ3Hx7dAAdzSGtK3k9Jq7Egtu.tar.zst",
 	pkg: "../src/main.roc",
 }
 
@@ -260,6 +260,7 @@ test! = |bytes| {
 
 target = Fuzz.target_with!({
 	name: "parse-never-crashes",
+	examples: [],
 	generator: Fuzz.raw_bytes,
 	test!,
 	show: |bytes| Str.inspect(bytes),
