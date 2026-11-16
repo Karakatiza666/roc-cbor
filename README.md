@@ -29,7 +29,7 @@ Features:
 | Version | 0.5.1 (section "Changes": the format error of the 11-14 compiler; a migration table from 0.4 in 0.5.0) |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
-| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-14-a87808d`). The 11-07 nightly and older do not compile 0.5.1: use 0.5.0 with them. |
+| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-15-f25da45`). The 11-07 nightly and older do not compile 0.5.1: use 0.5.0 with them. |
 | Reader | Strict by default. Each lenient read is a `Cbor.Leniency` in the option `allow`. |
 | Writer | Always well-formed, preferred serialization (shortest heads and floats). Deterministic with `key_order: Sorted`. |
 | Streams | Read and write data larger than memory, one item, entry or chunk at a time (section "Streams") |
@@ -800,6 +800,7 @@ A port to the derived parsers of the 11-14 nightly (`nightly-2026-11-14-a87808d`
 | Stream decoders | `Items.push`, `Items.from_stream`, `Entries.push` and `Entries.from_stream` take a type with `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]`, and give that error with `TooLarge(U64)` (and `NotStreamable`, `Input(e)`). Before, the parser of the type had to give `TooLarge` too. |
 | `Cbor.Raw.from_bytes` | No change: it gives `[InvalidCbor(U64)]`. |
 | Warnings | The 11-14 compiler warns when a member of a nested type has the name of a top-level definition. The private writer function `finish` is now `finish_output`. `Cbor.StreamWriter.finish` and the other `finish` methods do not change. |
+| CI nightly | `.roc-version` is `nightly-2026-11-15-f25da45`. |
 | Tests | The tests use the error type of the format. New tests: `MissingRequiredField` from `Items.push` and `Entries.push`, and the closed error type of `Raw.from_bytes`. `tests/wasm_dev/run.mjs` gives the imports `roc_dbg` and `roc_expect_failed` of the 11-14 compiler. Workarounds for 2 compiler issues (section "Known compiler issues"). |
 
 | Your code in 0.5.0 | In 0.5.1 |
