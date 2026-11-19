@@ -1031,7 +1031,7 @@ The memory cases run under `ulimit -v` (512 MiB), so a memory bug is a FAIL row.
 | | `fuzz` | `scripts/fuzz.sh` on Linux x64. A failure uploads the inputs. |
 | | `scale` | `scripts/scale.sh 3` with 200,000 items. Blocks. |
 | | `differential` | `scripts/differential.sh` with `DIFF_STRICT=1` and `cbor2` 6.2.1. Blocks. |
-| | `bench` | `scripts/bench.sh --check 5` against `bench/baseline-ci.txt`, with the run correction (`BENCH_RUN_NORM=1`: each ratio is divided by the median ratio of the run, because runners differ in speed). A case fails above 1.2x. |
+| | `bench` | `scripts/bench.sh --check 5` against `bench/baseline-ci.txt`, with the run correction (`BENCH_RUN_NORM=1`: each ratio is divided by the median ratio of the run, because runners differ in speed). A case fails above 1.3x. |
 | `.github/workflows/release.yml` (push of a tag `X.Y.Z` or `X.Y.Z-pre`) | | Runs the tests, makes the bundle and the docs, and publishes the GitHub Release with `<hash>.tar.zst` and `package-docs.tar.gz`. Then runs the examples against the published URL. |
 
 `.github/actions/setup-roc` downloads the nightly of `.roc-version` from `roc-lang/nightlies` with `gh release download`.

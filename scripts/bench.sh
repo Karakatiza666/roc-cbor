@@ -29,7 +29,7 @@
 # Shared runners also differ from each other: of 3 runs of the same code, one was 1.2x to 1.55x slower
 # on most cases after calib. Thus CI sets BENCH_RUN_NORM=1: each ratio is divided by the median ratio
 # of all the cases of the run, so a slow runner moves all the cases and fails none. A case fails when
-# it is slower than the other cases by more than the limit (CI: 1.2; the worst seen was 1.18). A slowdown
+# it is slower than the other cases by more than the limit (CI: 1.3; the worst seen in 4 runs was 1.22). A slowdown
 # of all the cases together is not found this way; the local --check against bench/baseline.txt finds it.
 #
 # A normalized time under 0.005 counts as 0.005 (bytes_parse is a sublist: about 0.3 microseconds).
