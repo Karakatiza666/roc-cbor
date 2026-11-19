@@ -2418,6 +2418,25 @@ counts_match : Cbor.Writer -> Bool
 counts_match = |w| !w.st.bad and w.st.left == 0 and w.st.level == 0
 
 ## The output with the gaps of old record heads removed: one pass, in place.
+##
+## TODO(build time): this sort gives every program that calls `Cbor.encode`
+## a second copy of the builtin sort, for `{ at : U64, len : U64 }`. All the
+## other sorts of this module sort `U64` values or indexes (`dedup_entries`,
+## `dup_keys`, `sort_maps`, `first_duplicate`, `walk`), and share one copy.
+## In an optimised (`--opt=speed`) build of an 8-query roc-reify-surrealdb
+## probe (nightly-reify-2026-11-15-ee91030), the two copies are about
+## 84,000 of the 191,000 LLVM instructions of the program; `quad_swap`
+## alone is 11,000 to 18,000 per copy. How much build time the second copy
+## costs is not measured. Possible fixes, each to measure first:
+## - Sort `U64` indexes into `gaps` by `at`, as the other sorts do, so that
+##   the `U64` copy is used.
+## - Keep `gaps` in order of `at` as `shorten_head` adds them, and do not
+##   sort. A record closes after the records in it, so a new gap goes in
+##   before the gaps of the records in it: search from the end.
+## - Merge the gaps in one pass with no general sort: each gap belongs to
+##   one record, and records nest.
+## The output must stay the same bytes: the round-trip, differential and
+## fuzz tests check this.
 finish_output : Cbor.Writer -> List(U8)
 finish_output = |w| {
 	{ out, st } = w
