@@ -78,14 +78,15 @@ jobs:
       - run: python3 -m venv .cache/venv && .cache/venv/bin/pip install cbor2==6.2.1
       - run: scripts/differential.sh
         env: { DIFF_STRICT: "1" }
-  # Speed against bench/baseline.txt. Report only: a shared runner is noisy and is not the baseline machine.
+  # Speed against bench/baseline-ci.txt (the median of 3 CI runs). The run correction removes the speed
+  # of the runner, so a case fails only when it is slower than the other cases by more than 1.2x.
   bench:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    continue-on-error: true
     permissions: { contents: read }
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup-roc
         with: { token: "${{ github.token }}", nightly-tag: "${{ inputs.roc-nightly || '' }}" }
       - run: scripts/bench.sh --check 5
+        env: { BENCH_BASELINE: bench/baseline-ci.txt, BENCH_RUN_NORM: "1", BENCH_RATIO: "1.2" }

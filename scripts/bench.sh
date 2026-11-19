@@ -8,7 +8,8 @@
 # runs: the runs of each measurement (default 5); the median is used.
 # BENCH_CASES: the cases to run (default: all). BENCH_MS: the target time of the timed work in one run
 # (default 400). BENCH_REF: the old version of the compare mode (a git ref). BENCH_OLD_DIR: its worktree
-# (removed at the end). BENCH_RATIO: the limit of --check (default 1.5).
+# (removed at the end). BENCH_RATIO: the limit of --check (default 1.5). BENCH_BASELINE: the baseline
+# file of --check and --update (default bench/baseline.txt). BENCH_RUN_NORM=1: the run correction (below).
 #
 # Timing: the echo host has no clock, so the shell times each run of the binary. A run with 0 loops is
 # the base (start and input build). ms per loop = (median(loops) - median(0)) / loops. The loop count is
@@ -22,8 +23,14 @@
 # P25 work must not lose more than a third of the speed of any case without a decision. A complexity bug
 # gives much more (see scripts/scale.sh). A case under 1 / BENCH_RATIO is reported as "faster": update
 # the baseline after a speed gain, so that the gain is kept.
-# The baseline is of one machine. On another machine (CI) calib removes the clock speed, not the
-# differences of cache and memory, so CI runs --check as a report only.
+# The baseline is of one machine. On another machine calib removes the clock speed, not the
+# differences of cache and memory. So CI has its own baseline, bench/baseline-ci.txt: the median of
+# 3 CI runs of the same code (scripts/bench_ci_baseline.sh writes it from the logs of the runs).
+# Shared runners also differ from each other: of 3 runs of the same code, one was 1.2x to 1.55x slower
+# on most cases after calib. Thus CI sets BENCH_RUN_NORM=1: each ratio is divided by the median ratio
+# of all the cases of the run, so a slow runner moves all the cases and fails none. A case fails when
+# it is slower than the other cases by more than the limit (CI: 1.2; the worst seen was 1.18). A slowdown
+# of all the cases together is not found this way; the local --check against bench/baseline.txt finds it.
 #
 # A normalized time under 0.005 counts as 0.005 (bytes_parse is a sublist: about 0.3 microseconds).
 # How to read a failure: the row gives the case, the baseline and the new normalized time and the ratio.
@@ -42,7 +49,8 @@ runs="${1:-5}"
 ref="${BENCH_REF:-0.4.1}"
 target_ms="${BENCH_MS:-400}"
 limit="${BENCH_RATIO:-1.5}"
-baseline="$root/bench/baseline.txt"
+baseline="${BENCH_BASELINE:-$root/bench/baseline.txt}"
+run_norm="${BENCH_RUN_NORM:-0}"
 export ROC_CACHE_DIR="${ROC_CACHE_DIR:-$root/.cache/roc}"
 # roc build stops with PathOutsideWorkspace when this path has `..` in it.
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$root/.cache/xdg}"
@@ -153,7 +161,7 @@ echo "mode=$mode runs=$runs head=$(head_desc) calib ms: start $c1, end $c2 (drif
 
 if [ "$mode" = update ]; then
 	{
-		echo "# bench/baseline.txt: written by scripts/bench.sh --update. Do not edit by hand."
+		echo "# $(basename "$baseline"): written by scripts/bench.sh --update. Do not edit by hand."
 		echo "# head=$(head_desc) date=$(date -u +%Y-%m-%d) machine=$(uname -m) cpus=$(nproc) runs=$runs"
 		echo "# case loops ms_per_loop normalized (ms / calib ms)"
 		echo "calib $cl1 $calib_ms 1.0000"
@@ -166,23 +174,41 @@ if [ "$mode" = update ]; then
 	exit 0
 fi
 
-echo "baseline: $(sed -n 2p "$baseline" | sed 's/^# //')"
-printf '| %-14s | %10s | %10s | %10s | %6s | %-7s |\n' case "ms now" "norm base" "norm now" ratio verdict
-printf '| %-14s | %10s | %10s | %10s | %6s | %-7s |\n' --- ---: ---: ---: ---: ---
-fail=0
-slow=()
+echo "baseline: $(basename "$baseline"): $(sed -n 2p "$baseline" | sed 's/^# //')"
+# The ratio of each case: norm now / norm base. A normalized time under 0.005 (a few microseconds) is
+# noise: both sides count as 0.005.
+measured=()
 for row in "${results[@]}"; do
 	read -r name _ ms <<<"$row"
 	b=$(base_field "$name" 4)
 	if [ -z "$b" ]; then
+		measured+=("$name $ms - - -")
+		continue
+	fi
+	measured+=("$name $ms $b $(awk -v m="$ms" -v c="$calib_ms" -v b="$b" 'BEGIN {
+		n = m / c; fn = (n < 0.005 ? 0.005 : n); fb = (b < 0.005 ? 0.005 : b)
+		printf "%.4f %.4f", n, fn / fb
+	}')")
+done
+# The run correction: the median of the ratios.
+run_ratio=1
+if [ "$run_norm" = 1 ]; then
+	run_ratio=$(printf '%s\n' "${measured[@]}" | awk '$5 != "-" { print $5 }' | sort -g |
+		awk '{ a[NR] = $1 } END { if (NR == 0) print 1; else if (NR % 2) print a[(NR + 1) / 2]; else printf "%.4f", (a[NR / 2] + a[NR / 2 + 1]) / 2 }')
+	echo "run correction: each ratio is divided by ${run_ratio} (the median ratio of the cases of this run)"
+fi
+printf '| %-14s | %10s | %10s | %10s | %6s | %-7s |\n' case "ms now" "norm base" "norm now" ratio verdict
+printf '| %-14s | %10s | %10s | %10s | %6s | %-7s |\n' --- ---: ---: ---: ---: ---
+fail=0
+slow=()
+for row in "${measured[@]}"; do
+	read -r name ms b now raw <<<"$row"
+	if [ "$b" = - ]; then
 		printf '| %-14s | %10s | %10s | %10s | %6s | %-7s |\n' "$name" "$ms" - - - "new"
 		continue
 	fi
-	read -r now r v <<<"$(awk -v m="$ms" -v c="$calib_ms" -v b="$b" -v l="$limit" 'BEGIN {
-		# A normalized time under 0.005 (a few microseconds) is noise: both sides count as 0.005.
-		n = m / c; fn = (n < 0.005 ? 0.005 : n); fb = (b < 0.005 ? 0.005 : b); r = fn / fb
-		v = (r > l ? "SLOWER" : (r < 1 / l ? "faster" : "ok"))
-		printf "%.4f %.2f %s", n, r, v
+	read -r r v <<<"$(awk -v x="$raw" -v k="$run_ratio" -v l="$limit" 'BEGIN {
+		r = x / k; v = (r > l ? "SLOWER" : (r < 1 / l ? "faster" : "ok")); printf "%.2f %s", r, v
 	}')"
 	printf '| %-14s | %10s | %10s | %10s | %6s | %-7s |\n' "$name" "$ms" "$b" "$now" "$r" "$v"
 	if [ "$v" = SLOWER ]; then
@@ -190,7 +216,11 @@ for row in "${results[@]}"; do
 		slow+=("$name")
 	fi
 done
-echo "(norm: ms per loop / calib ms per loop; ratio: norm now / norm base; limit $limit)"
+if [ "$run_norm" = 1 ]; then
+	echo "(norm: ms per loop / calib ms per loop; ratio: (norm now / norm base) / ${run_ratio}; limit $limit)"
+else
+	echo "(norm: ms per loop / calib ms per loop; ratio: norm now / norm base; limit $limit)"
+fi
 if [ "$fail" -ne 0 ]; then
 	echo "FAIL: slower than the baseline by more than ${limit}x: ${slow[*]}"
 	exit 1

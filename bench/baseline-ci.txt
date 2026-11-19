@@ -1,0 +1,23 @@
+# baseline-ci.txt: written by scripts/bench_ci_baseline.sh from CI runs. Do not edit by hand.
+# head=c7c905d 7c70f9d 7878926 date=2026-11-19 machine=ubuntu-24.04 (GitHub runner) runs=43952899013 43961397201 44534302468 (median)
+# case loops ms_per_loop normalized (ms / calib ms)
+calib 378 1.1280 1.0000
+bytes_encode 24242 0.0277 0.0246
+bytes_parse 1812598 0.0002 0.0002
+u8list_encode 12 41.8449 37.0374
+u8list_parse 11 16.9029 14.9848
+records_encode 48 5.4473 4.8292
+records_parse 15 13.7355 12.1575
+records_value 12 22.0508 19.5174
+camel_parse 7 25.1811 22.2881
+reject_parse 10 18.5780 16.4699
+unknown_parse 4 44.1922 39.1151
+unions_parse 23 6.9421 6.1445
+unions_content 25 6.9819 6.1798
+trees_parse 26 11.3834 10.0756
+deep_encode 7855 0.0214 0.0189
+deep_parse 4007 0.0614 0.0544
+dict_parse 9 28.4286 25.1930
+map_value 4 36.4048 32.2223
+path_map 29 5.9596 5.2749
+text_parse 108 2.3542 2.0871
