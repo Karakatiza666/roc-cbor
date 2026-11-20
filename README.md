@@ -1090,3 +1090,46 @@ Issue drafts for the rows with no issue wait for the maintainer. The repros of #
 
 The bundle has the files of `src/` that `main.roc` imports: `main.roc` and `Cbor.roc`.
 Each of the two files starts with the copyright line and a reference to the UPL, because the bundle has no `LICENSE` file.
+
+### A format of your own
+
+A type of your own (`parser_for`, `encoder_for`) is enough for most needs. A format of your own is for state beside the
+bytes, or for one codec of a type for two formats: for example a payload that holds files, where the encoder collects
+the files it meets and the parser gets a table of them. The format is a type of your own with the methods of the codec
+protocol, and each method is one call of the same method of `Cbor`. Its write state is a `Cbor.WriterWith(s)`: the
+writer and a value `s` of your own. Its read state holds the `Cbor` and the `Cbor.Reader` of `Cbor.Reader.new`, and your
+own values. `examples/outside.roc` is a whole format.
+
+| Item | Type | Use |
+| --- | --- | --- |
+| `Cbor.Reader.new` | `List(U8), Cbor.Options -> Try({ cbor : Cbor, reader : Cbor.Reader }, Cbor.Error)` | Start a read. The checks of `parse_with` come first (the walk), and the bytes must be exactly one item. `cbor` and `reader` go to each `parse_*` method. |
+| `Cbor.Reader.finish` | `Cbor.Reader -> Try({}, Cbor.Error)` | End a read: `Ok` when the reader is at the end of the bytes, else `InvalidCbor` at the reader |
+| `Cbor.Writer.new` | `Cbor.WriteOptions -> Cbor.Writer` | Start a write of one root item. `fields` and `key_order` apply as in `encode_with`. |
+| `Cbor.Writer.finish` | `Cbor.Writer -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])` | End a write: the bytes, with the checks and the sort of `encode_with` |
+| `Cbor.WriterWith(s)` | `{ writer : Cbor.Writer, state : s }` | A writer with a value of your own beside it |
+| `Cbor.ContainerWith(s)` | `{ container : Cbor.Container, state : s }` | A container with that value |
+| `Cbor.encode_list_carry` | The type of `encode_list`, with `Cbor.WriterWith(s)` for the writer and `Cbor.ContainerWith(s)` for the container | `encode_list`, and each item gets the value of your own and gives it back for the next item. Also `encode_tuple_carry`, `encode_tag_carry`, `encode_record_carry` and `encode_dict_carry`, for `encode_tuple`, `encode_tag`, `encode_record` and `encode_dict`. |
+
+```roc
+## The write state: the writer of roc-cbor, and the files so far.
+Enc : Cbor.WriterWith(List(Str))
+
+Wire := [Default].{
+	encode_list : Enc, U64, (Cbor.ContainerWith(List(Str)), (Cbor.ContainerWith(List(Str)), (Enc -> Try(Enc, err)) -> Try(Cbor.ContainerWith(List(Str)), err)) -> Try(Cbor.ContainerWith(List(Str)), err)) -> Try(Enc, err)
+	encode_list = |e, count, write_items| Cbor.encode_list_carry(e, count, write_items)
+	# ... each method of the codec protocol, one call of Cbor
+}
+
+## The write: start, the value, end.
+e = encode_shape(value, { writer: Cbor.Writer.new({}), state: [] })?
+bytes = e.writer.finish()?
+
+## The read: start, the value, end.
+start = Cbor.Reader.new(bytes, {})?
+parsed = parse_shape({ cbor: start.cbor, reader: start.reader, files })?
+parsed.rest.reader.finish()?
+```
+
+The counts are checked as in a derived encoder: a wrong count is `CountMismatch` at `finish`. A read needs nothing more:
+each `parse_*` method takes `Cbor` and `Cbor.Reader` and gives the reader after the item. A tag union reads with `peek`,
+`parse_str` and the `parse_dict_*` and `parse_tuple_*` methods.
