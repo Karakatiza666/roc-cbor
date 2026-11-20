@@ -20,6 +20,7 @@ expect {
 	r == Ok({ a: Bool.False })
 }
 
+## A Bool field with 1 (a1 61 61 01) reads as true.
 expect {
 	r : Try({ a : Bool }, _)
 	r = Cbor.parse_with([0xa1, 0x61, 0x61, 0x01], rows)
@@ -33,6 +34,7 @@ expect {
 	r == Ok([Bool.True, Bool.False])
 }
 
+## Without PaddedNumbers, the padded 1 (18 01) is an error at byte 1.
 expect {
 	r : Try(List(Bool), _)
 	r = Cbor.parse_with([0x82, 0x18, 0x01, 0x1b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00], rows)
@@ -53,12 +55,14 @@ expect {
 	r == Err(InvalidCbor(3))
 }
 
+## In a List(Bool), -1 (20) is an error at byte 2.
 expect {
 	r : Try(List(Bool), _)
 	r = Cbor.parse_with([0x82, 0x01, 0x20], rows)
 	r == Err(InvalidCbor(2))
 }
 
+## 256 (19 01 00) as a Bool is an error at byte 0.
 expect {
 	r : Try(Bool, _)
 	r = Cbor.parse_with([0x19, 0x01, 0x00], rows)
@@ -72,6 +76,7 @@ expect {
 	r == Ok(Bool.True)
 }
 
+## 0.5 (f9 38 00) as a Bool is an error at byte 0.
 expect {
 	r : Try(Bool, _)
 	r = Cbor.parse_with([0xf9, 0x38, 0x00], rows)
@@ -159,6 +164,7 @@ expect {
 	r == Err(MissingRequiredField("a"))
 }
 
+## A Try(a, [Null]) field with a value "x" reads as Ok("x").
 expect {
 	r : Try({ a : Try(Str, [Null]) }, _)
 	r = Cbor.parse_with([0xa1, 0x61, 0x61, 0x61, 0x78], rows)
@@ -231,6 +237,7 @@ expect {
 	r == Ok([("x", Err(Null))])
 }
 
+## A null in the I64 place of a (Str, I64) tuple is an error at byte 3.
 expect {
 	r : Try((Str, I64), _)
 	r = Cbor.parse_with([0x82, 0x61, 0x78, 0xf6], rows)
@@ -244,6 +251,7 @@ expect {
 	r == Ok(Dict.from_list([("a", Err(Null))]))
 }
 
+## A null value in a Dict(Str, U64) is an error at byte 3.
 expect {
 	r : Try(Dict(Str, U64), _)
 	r = Cbor.parse_with([0xa1, 0x61, 0x61, 0xf6], rows)
@@ -259,6 +267,7 @@ expect {
 	Cbor.encode(v) == [0xa2, 0x61, 0x61, 0xf6, 0x61, 0x62, 0x01]
 }
 
+## { a: Err(Null) } is written as a1 61 61 f6.
 expect {
 	v : { a : Try(Str, [Null]) }
 	v = { a: Err(Null) }
@@ -296,12 +305,14 @@ expect {
 	Cbor.encode(v) == [0x82, 0xf6, 0x05]
 }
 
+## The tuple ("x", Err(Null)) is written as 82 61 78 f6.
 expect {
 	v : (Str, Try(I64, [Null]))
 	v = ("x", Err(Null))
 	Cbor.encode(v) == [0x82, 0x61, 0x78, 0xf6]
 }
 
+## Err(Null) at the root is written as f6.
 expect {
 	v : Try(U64, [Null])
 	v = Err(Null)
@@ -318,6 +329,7 @@ expect {
 	r == Ok([{ id: 1, note: Err(Missing) }, { id: 2, note: Ok("n") }])
 }
 
+## { id: 1, note: Err(Null) } reads back with note as an absent optional field.
 expect {
 	v : { id : U64, note : Try(Str, [Null]) }
 	v = { id: 1, note: Err(Null) }

@@ -60,6 +60,7 @@ expect {
 b_a : List(U8)
 b_a = [0xa2, 0x61, 0x62, 0x01, 0x61, 0x61, 0x02]
 
+## With Sorted, {"b": 1, "a": 2} is an error at the key "a" (byte 4), as a record and as a Dict.
 expect {
 	a : Try({ a : U64, b : U64 }, _)
 	a = Cbor.parse_with(b_a, sorted)
@@ -86,6 +87,7 @@ expect {
 unknown_b_a : List(U8)
 unknown_b_a = [0xa2, 0x61, 0x61, 0x01, 0x61, 0x75, 0xa2, 0x61, 0x79, 0x01, 0x61, 0x78, 0x02]
 
+## With Sorted, the unsorted map in the unknown field "u" is an error at byte 10, as a record and as a Cbor.Value; parse reads { a: 1 }.
 expect {
 	a : Try({ a : U64 }, _)
 	a = Cbor.parse_with(unknown_b_a, sorted)
@@ -134,6 +136,7 @@ Shape : [Dot({ a : Str }), Box({ a : Str, w : U64 })]
 type_tag : Cbor.Unions
 type_tag = Internal({ tag: "type", content: "value" })
 
+## With Sorted, {"a": "x", "type": "Dot"} (the tag key last) reads as Dot({ a: "x" }).
 expect {
 	# {"a": "x", "type": "Dot"}: the tag key is the last key.
 	bytes = [0xa2, 0x61, 0x61, 0x61, 0x78, 0x64, 0x74, 0x79, 0x70, 0x65, 0x63, 0x44, 0x6f, 0x74]
@@ -142,6 +145,7 @@ expect {
 	r == Ok(Dot({ a: "x" }))
 }
 
+## With Sorted, {"type": "Dot", "a": "x"} is an error at the key "a" (byte 10); without Sorted it reads as Dot({ a: "x" }).
 expect {
 	# {"type": "Dot", "a": "x"}: out of order at the key "a".
 	bytes = [0xa2, 0x64, 0x74, 0x79, 0x70, 0x65, 0x63, 0x44, 0x6f, 0x74, 0x61, 0x61, 0x61, 0x78]
@@ -152,6 +156,7 @@ expect {
 	r == Err(InvalidCbor(10)) and any == Ok(Dot({ a: "x" }))
 }
 
+## A record written with key_order: Sorted reads back with Sorted as Box({ a: "y", w: 3 }).
 expect {
 	# The writer and the reader agree on an internal tag in a sorted map.
 	bytes = Cbor.encode_with({ w: 3.U64, type: "Box", a: "y" }, { key_order: Sorted }) ?? []
@@ -166,6 +171,7 @@ expect {
 mixed : List(U8)
 mixed = [0xa4, 0x0a, 0x00, 0x20, 0x00, 0x61, 0x7a, 0x00, 0x62, 0x61, 0x61, 0x00]
 
+## With Sorted, the map {10: 0, -1: 0, "z": 0, "aa": 0} is in order and reads as a Cbor.Value.
 expect {
 	r : Try(Cbor.Value, _)
 	r = Cbor.parse_with(mixed, sorted)
@@ -270,6 +276,7 @@ expect {
 a_a_b : List(U8)
 a_a_b = [0xa3, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02, 0x61, 0x62, 0x03]
 
+## With Sorted, {"a": 1, "a": 2, "b": 3} as a record: Reject is an error at byte 4, First gives a: 1, Last gives a: 2.
 expect {
 	a : Try({ a : U64, b : U64 }, _)
 	a = Cbor.parse_with(a_a_b, sorted)
@@ -280,6 +287,7 @@ expect {
 	a == Err(InvalidCbor(4)) and b == Ok({ a: 1, b: 3 }) and c == Ok({ a: 2, b: 3 })
 }
 
+## With Sorted, {"a": 1, "a": 2, "b": 3} as a Dict: First gives "a": 1, Last gives "a": 2, also as a Cbor.Value.
 expect {
 	a : Try(Dict(Str, U64), _)
 	a = Cbor.parse_with(a_a_b, { key_order: Sorted, duplicate_keys: First })
@@ -334,6 +342,7 @@ expect {
 
 # key_order: Any does not change
 
+## With key_order: Any or no option, {"b": 1, "a": 2} reads as { a: 2, b: 1 }, and {"a": 1, "a": 2, "b": 3} is still an error at byte 4.
 expect {
 	a : Try({ a : U64, b : U64 }, _)
 	a = Cbor.parse(b_a)

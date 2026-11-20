@@ -307,6 +307,7 @@ upload = |n| {
 	Ok($out.concat(closed.bytes))
 }
 
+## upload(2) writes [0, 1] as 82 00 01, and upload(0) is the app error Err(Empty).
 expect {
 	ok = upload(2)
 	empty = upload(0)
