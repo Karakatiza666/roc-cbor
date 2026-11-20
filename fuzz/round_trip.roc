@@ -328,6 +328,7 @@ test! = |g| {
 	items = count_items(bytes)
 	others : List(Cbor.Options)
 	others = [
+		{ forms: Encoder, ignore_tags: [4] },
 		{ allow: [IntFromText, DecFromText, PaddedNumbers, BytesFromBase64] },
 		{ allow: Cbor.sql_rows },
 		{ duplicate_keys: First, unknown_fields: Reject },
@@ -427,6 +428,49 @@ ramp = {
 	$out
 }
 
+# Any accepted bytes for these typed reads must be the bytes of the value's encoder.
+encoder_forms_ok : List(U8) -> Bool
+encoder_forms_ok = |bytes| {
+	f64 : Try(F64, _)
+	f64 = Cbor.parse_with(bytes, { forms: Encoder, allow: [PaddedNumbers, FloatToInt] })
+	f32 : Try(F32, _)
+	f32 = Cbor.parse_with(bytes, { forms: Encoder, allow: [PaddedNumbers, FloatToInt] })
+	dec : Try(Dec, _)
+	dec = Cbor.parse_with(bytes, { forms: Encoder, allow: [PaddedNumbers, DecFromText, FloatToInt] })
+	list : Try(List(U8), _)
+	list = Cbor.parse_with(bytes, { forms: Encoder })
+	strs : Try(List(Str), _)
+	strs = Cbor.parse_with(bytes, { forms: Encoder })
+	(f64.map_ok(|v| Cbor.encode(v) == bytes) ?? Bool.True) and
+		(f32.map_ok(|v| Cbor.encode(v) == bytes) ?? Bool.True) and
+			(dec.map_ok(|v| Cbor.encode(v) == bytes) ?? Bool.True) and
+				(list.map_ok(|v| Cbor.encode(v) == bytes) ?? Bool.True) and
+					(strs.map_ok(|v| Cbor.encode(v) == bytes) ?? Bool.True)
+}
+
+# Exercise arbitrary inputs and each float width directly, as well as canonical and alternative decimal forms.
+forms_test! : List(U8), Item => {}
+forms_test! = |bytes, v| {
+	candidates = [
+		bytes,
+		[0xf9].concat(bytes.take_first(2)),
+		[0xfa].concat(bytes.take_first(4)),
+		[0xfb].concat(bytes.take_first(8)),
+		Cbor.encode(v.score),
+		Cbor.encode(v.ratio),
+		Cbor.encode(v.price),
+		Cbor.encode(v.small),
+		Cbor.encode(v.tags),
+		[0x40],
+		[0x80],
+		[0xf9, 0x7e, 0],
+		[0xc4, 0x82].concat(Cbor.encode((v.delta % 20) - 18)).concat(Cbor.encode(v.signed)),
+	]
+	if !candidates.all(encoder_forms_ok) {
+		crash "forms: Encoder accepted bytes that change when re-encoded"
+	}
+}
+
 target = Fuzz.target_with!({
 	name: "round-trip",
 	examples: [
@@ -435,6 +479,10 @@ target = Fuzz.target_with!({
 		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
 	],
 	generator: Fuzz.raw_bytes,
-	test!: |bytes| test!(input_of(bytes)),
+	test!: |bytes| {
+		input = input_of(bytes)
+		forms_test!(bytes, input.item)
+		test!(input)
+	},
 	show: |bytes| Str.inspect(input_of(bytes)),
 })

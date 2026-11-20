@@ -67,6 +67,59 @@ stream_sorted = |n, seed| {
 run : Str, U64, U64, U64 -> Try(U64, [UnknownCase])
 run = |case, loops, n, seed|
 	match case {
+		"report" => {
+			v = make(n, |i| { a: [i + seed], b: Dec.from_attos((i + 1).to_i128()) })
+			Ok(
+				repeat(
+					loops,
+					|_| {
+						w = Cbor.encode_item(v, Cbor.Writer.new({})) ?? crash "write"
+						r = w.finish_report() ?? crash "finish_report"
+						if (r.max_depth != 4) crash "depth" else r.bytes.len()
+					},
+				),
+			)
+		}
+		"report_sorted" => {
+			v = make(n, |i| { b: Dec.from_attos((i + 1).to_i128()), a: [i + seed] })
+			Ok(
+				repeat(
+					loops,
+					|_| {
+						w = Cbor.encode_item(v, Cbor.Writer.new({ key_order: Sorted })) ?? crash "write"
+						r = w.finish_report() ?? crash "finish_report"
+						if (r.max_depth != 4) crash "depth" else r.bytes.len()
+					},
+				),
+			)
+		}
+		"report_memory" => {
+			# The closure keeps the input alive: one input and one output, with no report-time output copy.
+			v = Cbor.Bytes.from_list(List.repeat(seed.to_u8_wrap(), n))
+			Ok(
+				repeat(
+					loops,
+					|_| {
+						w = Cbor.encode_item(v, Cbor.Writer.new({})) ?? crash "write"
+						r = w.finish_report() ?? crash "finish_report"
+						if (r.max_depth != 0 or r.bytes.len() != n + 5) crash "report" else n
+					},
+				),
+			)
+		}
+		"report_bytes" => {
+			v = Cbor.Bytes.from_list(List.repeat(seed.to_u8_wrap(), n))
+			Ok(
+				repeat(
+					loops,
+					|_| {
+						w = Cbor.encode_item(v, Cbor.Writer.new({})) ?? crash "write"
+						r = w.finish_report() ?? crash "finish_report"
+						if (r.max_depth != 0) crash "depth" else r.bytes.len()
+					},
+				),
+			)
+		}
 		"u64" => {
 			v = make(n, |i| i + seed)
 			Ok(repeat(loops, |_| Cbor.encode(v).len()))

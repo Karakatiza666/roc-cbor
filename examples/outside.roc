@@ -2,7 +2,7 @@ app [] { pkg: "../src/main.roc" }
 
 # A format of your own (README, section "A format of your own"), with state beside the state of roc-cbor: the handles
 # that a value holds. A handle does not cross as bytes. The payload has its place in a list, and the list goes beside
-# the payload. Uses Cbor.Writer.new, Cbor.Writer.finish, Cbor.WriterWith, Cbor.ContainerWith, Cbor.encode_record_carry,
+# the payload. Uses Cbor.Writer.open, Cbor.Writer.finish_report, Cbor.WriterWith, Cbor.ContainerWith, Cbor.encode_record_carry,
 # Cbor.encode_list_carry, Cbor.Reader.new, Cbor.Reader.finish and the parse_* methods. CI runs it on the source and on
 # the bundle.
 
@@ -37,12 +37,12 @@ Handle := Str.{
 }
 
 ## The format: each method is one call of the same method of Cbor.
-Wire := [Default].{
+Wire := Cbor.{
 	rename_field : Wire, Str -> Str
-	rename_field = |_, name| name
+	rename_field = |Wire.(cbor), name| Cbor.rename_field(cbor, name)
 
 	missing_field : Wire, Str -> Cbor.Error
-	missing_field = |_, name| MissingRequiredField(name)
+	missing_field = |Wire.(cbor), name| Cbor.missing_field(cbor, name)
 
 	encode_record : Enc, U64, (Cbor.ContainerWith(List(Str)), (Cbor.ContainerWith(List(Str)), Str, (Enc -> Try(Enc, err)) -> Try(Cbor.ContainerWith(List(Str)), err)) -> Try(Cbor.ContainerWith(List(Str)), err)) -> Try(Enc, err)
 	encode_record = |e, count, write_fields| Cbor.encode_record_carry(e, count, write_fields)
@@ -102,13 +102,16 @@ Wire := [Default].{
 Doc : { docs : List(Handle) }
 
 ## The payload, and the handles beside it.
-send : a -> Try({ bytes : List(U8), handles : List(Str) }, [CountMismatch, DuplicateMapKey, ..err])
-	where [a.encoder_for : Wire -> (a, Enc -> Try(Enc, [CountMismatch, DuplicateMapKey, ..err]))]
+send : a -> Try({ bytes : List(U8), handles : List(Str) }, [CountMismatch, DuplicateMapKey, TooDeep(U64), ..err])
+	where [a.encoder_for : Wire -> (a, Enc -> Try(Enc, [CountMismatch, DuplicateMapKey, TooDeep(U64), ..err]))]
 send = |value| {
 	Shape : a
-	encode_shape = Shape.encoder_for(Wire.Default)
-	e = encode_shape(value, { writer: Cbor.Writer.new({ key_order: Sorted }), state: [] })?
-	Ok({ bytes: e.writer.finish()?, handles: e.state })
+	opened = Cbor.Writer.open({ key_order: Sorted })
+	encode_shape = Shape.encoder_for(Wire.(opened.cbor))
+	e = encode_shape(value, { writer: opened.writer, state: [] })?
+	report = e.writer.finish_report()?
+	# Refuse inside the sender, before sending bytes the receiver's default depth limit would reject.
+	if (report.max_depth > 512) Err(TooDeep(report.max_depth)) else Ok({ bytes: report.bytes, handles: e.state })
 }
 
 ## The value of a payload, with the handles that came beside it.
@@ -117,7 +120,7 @@ receive : List(U8), List(Str) -> Try(a, Cbor.Error)
 receive = |bytes, handles| {
 	start = Cbor.Reader.new(bytes, { key_order: Sorted, unknown_fields: Reject })?
 	Shape : a
-	parse_shape = Shape.parser_for(Wire.Default)
+	parse_shape = Shape.parser_for(Wire.(start.cbor))
 	parsed = parse_shape({ cbor: start.cbor, reader: start.reader, handles })?
 	parsed.rest.reader.finish()?
 	Ok(parsed.value)

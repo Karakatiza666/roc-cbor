@@ -26,7 +26,7 @@ writes = |value, h| Cbor.encode(value) == hex(h)
 
 ## The value writes the hex bytes `h` with `key_order: Sorted`.
 sorts : a, Str -> Bool where [a.Cbor.Encodable([CountMismatch, DuplicateMapKey])]
-sorts = |value, h| Cbor.encode_with(value, { key_order: Sorted }) == Ok(hex(h))
+sorts = |value, h| encode_with_checked(value, { key_order: Sorted }) == Ok(hex(h))
 
 ## A map written by hand with encode_dict: each key is text.
 Keys := List(Str).{
@@ -203,7 +203,7 @@ expect {
 ## The same Cbor.Value map built in two orders writes the same bytes.
 expect {
 	pairs = [(text("b"), Cbor.Value.Int(1)), (Cbor.Value.Int(-1), Cbor.Value.Null), (text("aa"), Cbor.Value.Bool(Bool.True))]
-	sorts(vmap(pairs), "a320f6616201626161f5") and Cbor.encode_with(vmap(pairs.rev()), { key_order: Sorted }) == Cbor.encode_with(vmap(pairs), { key_order: Sorted })
+	sorts(vmap(pairs), "a320f6616201626161f5") and encode_with_checked(vmap(pairs.rev()), { key_order: Sorted }) == encode_with_checked(vmap(pairs), { key_order: Sorted })
 }
 
 ## A Cbor.Value map reads back from its sorted bytes with its entries in the sorted order: `0` (`00`) before `""` (`60`).
@@ -212,7 +212,7 @@ expect {
 expect {
 	given = vmap([(text(""), text("")), (Cbor.Value.Int(Cbor.IntValue.from_u64(0)), text(""))])
 	sorted = vmap([(Cbor.Value.Int(Cbor.IntValue.from_u64(0)), text("")), (text(""), text(""))])
-	bytes = Cbor.encode_with(given, { key_order: Sorted }) ?? []
+	bytes = encode_with_checked(given, { key_order: Sorted }) ?? []
 	back : Try(Cbor.Value, _)
 	back = Cbor.parse_with(bytes, { key_order: Sorted })
 	bytes == hex("a200606060") and back == Ok(sorted) and given != sorted and sorts(sorted, "a200606060")
@@ -235,42 +235,53 @@ expect sorts([1.U64, 2, 3], "83010203")
 expect sorts({ a: [{ b: 1.U64 }] }, "a1616181a1616201")
 
 ## Two entries with the same key bytes: an error. An encoder_for of your own, and two fields with one camelCase key.
-expect Cbor.encode_with(Keys.(["a", "b", "a"]), { key_order: Sorted }) == Err(DuplicateMapKey)
+expect encode_with_checked(Keys.(["a", "b", "a"]), { key_order: Sorted }) == Err(DuplicateMapKey)
 
 ## Without Sorted, the keys "a", "b", "a" write as given with no error: a3 61 61 07 61 62 07 61 61 07.
-expect Cbor.encode_with(Keys.(["a", "b", "a"]), {}) == Ok(hex("a3616107616207616107"))
+expect encode_with_checked(Keys.(["a", "b", "a"]), {}) == Ok(hex("a3616107616207616107"))
 
 ## With Sorted and Camel, the fields a_1 and a1 both write the key "a1": an error DuplicateMapKey.
-expect Cbor.encode_with({ a_1: 1.U64, a1: 2.U64 }, { fields: Camel, key_order: Sorted }) == Err(DuplicateMapKey)
+expect encode_with_checked({ a_1: 1.U64, a1: 2.U64 }, { fields: Camel, key_order: Sorted }) == Err(DuplicateMapKey)
 
 ## With Given (the default) too: a derived record never writes a key two times. Also in a list, and with one field absent
 ## (no collision then). Different camelCase keys write as before.
-expect Cbor.encode_with({ a_1: 1.U64, a1: 2.U64 }, { fields: Camel }) == Err(DuplicateMapKey)
+expect encode_with_checked({ a_1: 1.U64, a1: 2.U64 }, { fields: Camel }) == Err(DuplicateMapKey)
 
 ## With Camel, a_1 and a1 in a record in a list is also an error DuplicateMapKey.
-expect Cbor.encode_with([{ x: { a_1: 1.U64, a1: 2.U64 } }], { fields: Camel }) == Err(DuplicateMapKey)
+expect encode_with_checked([{ x: { a_1: 1.U64, a1: 2.U64 } }], { fields: Camel }) == Err(DuplicateMapKey)
 
 ## With Camel, a_1 absent (Err(Missing)) and a1: 2 write one entry a1: 2 (a1 62 61 31 02).
 expect {
 	v : { a_1 : Try(U64, [Missing]), a1 : U64 }
 	v = { a_1: Err(Missing), a1: 2 }
-	Cbor.encode_with(v, { fields: Camel }) == Ok(hex("a162613102"))
+	encode_with_checked(v, { fields: Camel }) == Ok(hex("a162613102"))
 }
 
 ## With Camel, a_b and ab write the different keys "aB" and "ab" with no error.
-expect Cbor.encode_with({ a_b: 1.U64, ab: 2.U64 }, { fields: Camel }) == Ok(hex("a26261420162616202"))
+expect encode_with_checked({ a_b: 1.U64, ab: 2.U64 }, { fields: Camel }) == Ok(hex("a26261420162616202"))
 
 ## Without Camel, a_1 and a1 are the different keys "a_1" and "a1": no error.
-expect Cbor.encode_with({ a_1: 1.U64, a1: 2.U64 }, {}) == Ok(hex("a26261310263615f3101"))
+expect encode_with_checked({ a_1: 1.U64, a1: 2.U64 }, {}) == Ok(hex("a26261310263615f3101"))
 
 ## A round trip: the sorted bytes read back, and the encode of the parse gives the same bytes.
 expect {
 	v = { zz: { b: 1.U64, aa: [2.5.F64, 0.1] }, a: Dict.from_list([("y", -1.I64), ("x", 7)]), m: "t" }
-	bytes = Cbor.encode_with(v, { key_order: Sorted }) ?? []
+	bytes = encode_with_checked(v, { key_order: Sorted }) ?? []
 	back : Try({ zz : { b : U64, aa : List(F64) }, a : Dict(Str, I64), m : Str }, _)
 	back = Cbor.parse(bytes)
 	value : Try(Cbor.Value, _)
 	value = Cbor.parse(bytes)
-	again = value.map_ok(|x| Cbor.encode_with(x, { key_order: Sorted }) ?? [])
+	again = value.map_ok(|x| encode_with_checked(x, { key_order: Sorted }) ?? [])
 	back == Ok(v) and again == Ok(bytes)
+}
+
+# Run the existing writer fixtures through both finish paths: identical bytes and errors.
+encode_with_checked : a, Cbor.WriteOptions -> Try(List(U8), [CountMismatch, DuplicateMapKey]) where [a.Cbor.Encodable([CountMismatch, DuplicateMapKey])]
+encode_with_checked = |value, options| {
+	ordinary = Cbor.encode_with(value, options)
+	reported = match Cbor.encode_item(value, Cbor.Writer.new(options)) {
+		Ok(w) => w.finish_report().map_ok(|r| r.bytes)
+		Err(e) => Err(e)
+	}
+	if (ordinary != reported) crash "finish_report differs from finish" else ordinary
 }

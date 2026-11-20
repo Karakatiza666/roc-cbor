@@ -57,6 +57,7 @@ Cbor :: {
 	## | --- | --- | --- |
 	## | `fields` | `Snake` | `Snake`: a record field `user_id` reads the key `user_id`. `Camel`: it reads the key `userId`. A key that is the key of two fields (`a_1` and `a1`) is an error at the key. |
 	## | `allow` | `[]` | The lenient reads (`Cbor.Leniency`). `[]` is strict. `Cbor.sql_rows` gives the rules of 0.4. |
+	## | `forms` | `Compatible` | `Encoder`: typed `Dec`, `F32` and `F64` read only their encoder's exact form, overriding leniencies for them. An ordinary derived list refuses a definite empty byte string; `parse_bytes` and `Cbor.Bytes` still read it. Other types and skipped items keep their rules. |
 	## | `duplicate_keys` | `Reject` | A key that is two times in one map. `Reject`: an error at the second key. `First`, `Last`: that instance is read, and the other ones are skipped. The same rule for each map: a record, a `Dict`, an internal tag, a `Cbor.Value`. Keys are the same when they are the same `Cbor.Value` (`is_eq`). |
 	## | `key_order` | `Any` | `Any`: the keys of a map can come in any order. `Sorted`: the keys of each map must be in the order of RFC 8949 4.2.1, the bytewise order of the deterministic encoding of each key (the order of `encode_with(value, { key_order: Sorted })`). A key that comes before the key in front of it in this order is an error at the key. Equal keys are adjacent, and `duplicate_keys` applies to them. The same rule for each map. |
 	## | `unknown_fields` | `Skip` | A key of a map read as a record that is not a field of the record. `Skip`: the entry is skipped. `Reject`: an error at the key. |
@@ -71,6 +72,7 @@ Cbor :: {
 	Options : {
 		fields ?: [Snake, Camel],
 		allow ?: List(Cbor.Leniency),
+		forms ?: [Compatible, Encoder],
 		duplicate_keys ?: [Reject, First, Last],
 		key_order ?: [Any, Sorted],
 		unknown_fields ?: [Skip, Reject],
@@ -205,6 +207,16 @@ Cbor :: {
 		## `fields` and `key_order` apply as in `encode_with`.
 		new : Cbor.WriteOptions -> Cbor.Writer
 		new = |options| new_writer(options.?fields ?? Snake, (options.?key_order ?? Given) == Sorted)
+
+		## Starts a write and gives the matching format value for `rename_field`, `missing_field` and `encode_key_str`.
+		open : Cbor.WriteOptions -> { cbor : Cbor, writer : Cbor.Writer }
+		open = |options| { cbor: with_fields(options.?fields ?? Snake), writer: Cbor.Writer.new(options) }
+
+		## Ends a write with its physical depth: arrays, maps and tags add a level, including empty containers,
+		## decimal fractions and bignums. Strings add no level. The same limit as the reader's `max_depth`.
+		## Shares the map-sort walk with `Sorted`; otherwise adds one structure walk, with no copy of the bytes.
+		finish_report : Cbor.Writer -> Try({ bytes : List(U8), max_depth : U64 }, [CountMismatch, DuplicateMapKey, ..err])
+		finish_report = |w| finish_writer_report(w)
 
 		## Ends a write of your own: the bytes, with the checks of `encode_with` (`CountMismatch`, then `DuplicateMapKey`)
 		## and the sort of `key_order: Sorted`.
@@ -1557,6 +1569,11 @@ Cbor :: {
 	## Reads a float, or an integer that is exact as an F64 (any integer of size 2^53 or less).
 	parse_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f64 = |cbor, state| {
+		if cbor.read.encoder_forms {
+			item = at_content(cbor, state)?
+			f = float(item)?
+			return if (float_form_matches(item, f.value)) Ok({ value: f.value, rest: f.rest }) else Err(InvalidCbor(item.pos))
+		}
 		if plain_at(cbor, state) {
 			# A float head at a plain position: its bits after the initial byte (the walk checked the bytes).
 			b = state.bytes.get(state.pos) ?? 0
@@ -1578,7 +1595,7 @@ Cbor :: {
 	## A finite value outside the F32 range, and a value that is not 0 but rounds to 0, are errors.
 	parse_f32 : Cbor, Cbor.Reader -> Try({ value : F32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f32 = |cbor, tagged| {
-		state = untag(cbor, tagged)?
+		state = if (cbor.read.encoder_forms) at_content(cbor, tagged)? else untag(cbor, tagged)?
 		f = float(state)?
 		small = f.value.to_f32_wrap()
 		lost =
@@ -1587,7 +1604,13 @@ Cbor :: {
 			} else {
 				Bool.False
 			}
-		if (lost) Err(InvalidCbor(state.pos)) else Ok({ value: small, rest: f.rest })
+		if lost {
+			Err(InvalidCbor(state.pos))
+		} else if cbor.read.encoder_forms and !float_form_matches(state, small.to_f64()) {
+			Err(InvalidCbor(state.pos))
+		} else {
+			Ok({ value: small, rest: f.rest })
+		}
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
@@ -1600,31 +1623,9 @@ Cbor :: {
 	## then text in the number form of JSON (`-1.25`, `4E+1`) reads exactly (see `Cbor.Options`).
 	parse_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_dec = |cbor, tagged| {
-		state = untag(cbor, tagged)?
-		h = head(state)?
-		match h.major {
-			0 => Ok({ value: Dec.from_attos(h.arg.to_i128() * dec_scale), rest: at(state, h.next) })
-			1 => Ok({ value: Dec.from_attos((-1 - h.arg.to_i128()) * dec_scale), rest: at(state, h.next) })
-			3 if cbor.read.dec_from_text => {
-				t = text(state)?
-				d = dec_text(t.value) ? |_| InvalidCbor(state.pos)
-				Ok({ value: d, rest: t.rest })
-			}
-			6 => decimal_fraction(state, cbor.read.padded)
-			_ => {
-				f = float(state)?
-				# The whole part and the fraction apart: the product of the f64 with 10^18 loses digits.
-				whole = f.value.to_i128_try() ? |_| InvalidCbor(state.pos)
-				if whole.abs_diff(0) > 170141183460469231731 {
-					return Err(InvalidCbor(state.pos))
-				}
-				frac = f.value - whole.to_f64()
-				scaled = frac * 1.0e18
-				frac_attos = (scaled + if (scaled < 0.0) -0.5 else 0.5).to_i128_try() ? |_| InvalidCbor(state.pos)
-				attos = (whole * dec_scale).plus_try(frac_attos) ? |_| InvalidCbor(state.pos)
-				Ok({ value: Dec.from_attos(attos), rest: f.rest })
-			}
-		}
+		parsed = read_dec(cbor, tagged)?
+		item = at_content(cbor, tagged)?
+		if (cbor.read.encoder_forms and !dec_form_matches(item, parsed.value.to_attos(), parsed.rest.pos)) Err(InvalidCbor(item.pos)) else Ok(parsed)
 	}
 
 	# Containers
@@ -1661,7 +1662,7 @@ Cbor :: {
 		match h.major {
 			# The array position: a `List(U8)` reads the first item only with `BytesFromArray`.
 			4 => Ok(Counted({ len: h.arg, rest: { ..at(state, h.next), array: state.pos } }))
-			2 => Ok(Counted({ len: h.arg, rest: moved(state, h.next, h.arg) }))
+			2 if !cbor.read.encoder_forms or h.arg != 0 => Ok(Counted({ len: h.arg, rest: moved(state, h.next, h.arg) }))
 			3 if cbor.read.bytes_from_base64 => base64_list(state)
 			_ => Err(InvalidCbor(state.pos))
 		}
@@ -2579,31 +2580,38 @@ shorten_head = |w, start, count, n| {
 ## Each NaN is `f9 7e00`. Only bit operations, so each value is exact.
 put_float : List(U8), U64 -> List(U8)
 put_float = |out, bits| {
+	form = preferred_float(bits)
+	put_be(out.append(form.head), form.bits, form.size)
+}
+
+## One classifier for writing and checking a typed float, including signed zero and canonical NaN.
+preferred_float : U64 -> { head : U8, bits : U64, size : U64 }
+preferred_float = |bits| {
 	sign = bits.shr_zf_wrap(63)
 	exp = bits.shr_zf_wrap(52).bitwise_and(0x7ff)
 	mant = bits.bitwise_and(0xfffffffffffff)
 	if exp == 0x7ff {
-		return put_be(out.append(0xf9), if (mant != 0) 0x7e00 else sign.shl_wrap(15).bitwise_or(0x7c00), 2)
+		return { head: 0xf9, bits: if (mant != 0) 0x7e00 else sign.shl_wrap(15).bitwise_or(0x7c00), size: 2 }
 	}
 	if exp == 0 {
 		# A zero is f16. A subnormal f64 is smaller than each f32.
-		return if (mant == 0) put_be(out.append(0xf9), sign.shl_wrap(15), 2) else put_be(out.append(0xfb), bits, 8)
+		return if (mant == 0) { head: 0xf9, bits: sign.shl_wrap(15), size: 2 } else { head: 0xfb, bits, size: 8 }
 	}
 	e = exp.to_i64_wrap() - 1023
 	# The significand with its leading 1: the value is sig * 2^(e - 52).
 	sig = mant.bitwise_or(0x10000000000000)
 	if e >= -14 and e <= 15 and mant.bitwise_and(0x3ffffffffff) == 0 {
-		put_be(out.append(0xf9), sign.shl_wrap(15).bitwise_or((e + 15).to_u64_wrap().shl_wrap(10)).bitwise_or(mant.shr_zf_wrap(42)), 2)
+		{ head: 0xf9, bits: sign.shl_wrap(15).bitwise_or((e + 15).to_u64_wrap().shl_wrap(10)).bitwise_or(mant.shr_zf_wrap(42)), size: 2 }
 	} else if e >= -24 and e < -14 and low_zero(sig, (28 - e).to_u8_wrap()) {
 		# An f16 subnormal: k * 2^-24, k = sig * 2^(e - 28).
-		put_be(out.append(0xf9), sign.shl_wrap(15).bitwise_or(sig.shr_zf_wrap((28 - e).to_u8_wrap())), 2)
+		{ head: 0xf9, bits: sign.shl_wrap(15).bitwise_or(sig.shr_zf_wrap((28 - e).to_u8_wrap())), size: 2 }
 	} else if e >= -126 and e <= 127 and mant.bitwise_and(0x1fffffff) == 0 {
-		put_be(out.append(0xfa), sign.shl_wrap(31).bitwise_or((e + 127).to_u64_wrap().shl_wrap(23)).bitwise_or(mant.shr_zf_wrap(29)), 4)
+		{ head: 0xfa, bits: sign.shl_wrap(31).bitwise_or((e + 127).to_u64_wrap().shl_wrap(23)).bitwise_or(mant.shr_zf_wrap(29)), size: 4 }
 	} else if e >= -149 and e < -126 and low_zero(sig, (-97 - e).to_u8_wrap()) {
 		# An f32 subnormal: k * 2^-149, k = sig * 2^(e + 97).
-		put_be(out.append(0xfa), sign.shl_wrap(31).bitwise_or(sig.shr_zf_wrap((-97 - e).to_u8_wrap())), 4)
+		{ head: 0xfa, bits: sign.shl_wrap(31).bitwise_or(sig.shr_zf_wrap((-97 - e).to_u8_wrap())), size: 4 }
 	} else {
-		put_be(out.append(0xfb), bits, 8)
+		{ head: 0xfb, bits: bits, size: 8 }
 	}
 }
 
@@ -2664,6 +2672,22 @@ finish_writer = |w| {
 	sorted = w.st.sorted
 	out = finish_output(w)
 	if (sorted) sort_maps(out).map_err(|DuplicateMapKey| DuplicateMapKey) else Ok(out)
+}
+
+## The same validation and output as finish_writer, with depth from the structure walk used for sorting.
+finish_writer_report : Cbor.Writer -> Try({ bytes : List(U8), max_depth : U64 }, [CountMismatch, DuplicateMapKey, ..err])
+finish_writer_report = |w| {
+	if !counts_match(w) {
+		return Err(CountMismatch)
+	}
+	if w.st.dup {
+		return Err(DuplicateMapKey)
+	}
+	sorted = w.st.sorted
+	out = finish_output(w)
+	{ maps, max_depth } = out_maps(out, sorted, Bool.True)
+	bytes = if (sorted) sort_known_maps(out, maps).map_err(|DuplicateMapKey| DuplicateMapKey) else Ok(out)
+	bytes.map_ok(|b| { bytes: b, max_depth })
 }
 
 ## The writer is the root writer, it wrote exactly one item, and each level got its count.
@@ -2856,8 +2880,10 @@ out_head = |out, pos| {
 
 ## Each map of the output with 2 entries or more, in the order of their ends: an inner map comes before the map it is in.
 ## One walk of the heads, a loop with a list of the open containers.
-out_maps : List(U8) -> List(OutMap)
-out_maps = |out| {
+out_maps : List(U8), Bool, Bool -> { maps : List(OutMap), max_depth : U64 }
+out_maps = |out, collect_maps, report_depth| {
+	var $depth = 0.U64
+	var $max_depth = 0.U64
 	var $maps = []
 	# The start of each item of each open map, the innermost map last.
 	var $starts = []
@@ -2873,12 +2899,16 @@ out_maps = |out| {
 			$last = Ok(top)
 			$ended = Bool.True
 		} else {
-			if top.map {
+			if collect_maps and top.map {
 				$starts = $starts.append($p)
 			}
 			h = out_head(out, $p)
 			indefinite = h.info == 31
 			if h.major == 4 or h.major == 5 or h.major == 6 or ((h.major == 2 or h.major == 3) and indefinite) {
+				if report_depth and h.major >= 4 and h.major <= 6 {
+					$depth = $depth + 1
+					$max_depth = if ($depth > $max_depth) $depth else $max_depth
+				}
 				count = if (h.major == 5) 2 * h.arg else if (h.major == 6) 1 else h.arg
 				$open = $open.append({ left: count, indefinite, map: h.major == 5, mark: $starts.len(), head: $p, at: h.next })
 				$p = h.next
@@ -2890,7 +2920,10 @@ out_maps = |out| {
 		# A break is not in the entries of its map.
 		match $last {
 			Ok(f) => {
-				if f.map and $starts.len() >= f.mark + 4 {
+				if report_depth and out_level(out, f.head) {
+					$depth = $depth - 1
+				}
+				if collect_maps and f.map and $starts.len() >= f.mark + 4 {
 					$maps = $maps.append({ head: f.head, at: f.at, end: $p, items: copy_from($starts, f.mark) })
 				}
 				$starts = $starts.drop_last($starts.len() - f.mark)
@@ -2906,8 +2939,11 @@ out_maps = |out| {
 			}
 			match $open.last() {
 				Ok(f) if !f.indefinite and f.left == 0 => {
+					if report_depth and $open.len() > 1 and out_level(out, f.head) {
+						$depth = $depth - 1
+					}
 					$open = $open.drop_last(1)
-					if f.map and $starts.len() >= f.mark + 4 {
+					if collect_maps and f.map and $starts.len() >= f.mark + 4 {
 						$maps = $maps.append({ head: f.head, at: f.at, end: $p, items: copy_from($starts, f.mark) })
 					}
 					$starts = $starts.drop_last($starts.len() - f.mark)
@@ -2919,7 +2955,14 @@ out_maps = |out| {
 			}
 		}
 	}
-	$maps
+	{ maps: $maps, max_depth: $max_depth }
+}
+
+## An array, map or tag adds a physical nesting level; strings do not.
+out_level : List(U8), U64 -> Bool
+out_level = |out, pos| {
+	major = (out.get(pos) ?? 0).shr_zf_wrap(5)
+	major >= 4 and major <= 6
 }
 
 ## A new list of the items of `list` from `from` to the end. Not a slice, so `list` stays the only reference to its items.
@@ -2943,8 +2986,10 @@ count_item = |open|
 ## The output with the entries of each map sorted by their key bytes (RFC 8949 4.2.1). `Err(DuplicateMapKey)`: two
 ## entries of one map have the same key bytes.
 sort_maps : List(U8) -> Try(List(U8), [DuplicateMapKey])
-sort_maps = |out| {
-	maps = out_maps(out)
+sort_maps = |out| sort_known_maps(out, out_maps(out, Bool.True, Bool.False).maps)
+
+sort_known_maps : List(U8), List(OutMap) -> Try(List(U8), [DuplicateMapKey])
+sort_known_maps = |out, maps| {
 	if maps.is_empty() {
 		return Ok(out)
 	}
@@ -3059,6 +3104,35 @@ first_region = |regions, pos| {
 	$lo
 }
 
+read_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
+read_dec = |cbor, tagged| {
+	state = if (cbor.read.encoder_forms) at_content(cbor, tagged)? else untag(cbor, tagged)?
+	h = head(state)?
+	match h.major {
+		0 => Ok({ value: Dec.from_attos(h.arg.to_i128() * dec_scale), rest: at(state, h.next) })
+		1 => Ok({ value: Dec.from_attos((-1 - h.arg.to_i128()) * dec_scale), rest: at(state, h.next) })
+		3 if cbor.read.dec_from_text => {
+			t = text(state)?
+			d = dec_text(t.value) ? |_| InvalidCbor(state.pos)
+			Ok({ value: d, rest: t.rest })
+		}
+		6 => decimal_fraction(state, cbor.read.padded)
+		_ => {
+			f = float(state)?
+			# The whole part and the fraction apart: the product of the f64 with 10^18 loses digits.
+			whole = f.value.to_i128_try() ? |_| InvalidCbor(state.pos)
+			if whole.abs_diff(0) > 170141183460469231731 {
+				return Err(InvalidCbor(state.pos))
+			}
+			frac = f.value - whole.to_f64()
+			scaled = frac * 1.0e18
+			frac_attos = (scaled + if (scaled < 0.0) -0.5 else 0.5).to_i128_try() ? |_| InvalidCbor(state.pos)
+			attos = (whole * dec_scale).plus_try(frac_attos) ? |_| InvalidCbor(state.pos)
+			Ok({ value: Dec.from_attos(attos), rest: f.rest })
+		}
+	}
+}
+
 ## The walk rules and the encoding value of a parse with `options`.
 ## One pass over `allow`: a parse with no leniency does no work for them.
 parse_setup : Cbor.Options -> { rules : Rules, cbor : Cbor }
@@ -3067,6 +3141,7 @@ parse_setup = |options| {
 		..strict_read,
 		camel: (options.?fields ?? Snake) == Camel,
 		reject_unknown: (options.?unknown_fields ?? Skip) == Reject,
+		encoder_forms: (options.?forms ?? Compatible) == Encoder,
 	}
 	read = (options.?allow ?? []).fold(
 		start,
@@ -3118,14 +3193,70 @@ with_fields = |fields| Cbor.{ fields, read: strict_read, ignore_tags: [], unions
 
 ## A Dec in attos: an integer when it has no fraction and fits major type 0 or 1, else a decimal fraction.
 put_dec : List(U8), I128 -> List(U8)
-put_dec = |out, attos| {
+put_dec = |out, attos|
+	match preferred_dec(attos) {
+		Integer(n) => put_mantissa(out, n)
+		Fraction({ exponent, mantissa }) => put_mantissa(put_int(out.append(0xc4).append(0x82), exponent), mantissa)
+	}
+
+## One classifier for the encoder and the typed reader; no encoded copy is needed on read.
+preferred_dec : I128 -> [Integer(I128), Fraction({ exponent : I64, mantissa : I128 })]
+preferred_dec = |attos| {
 	whole = attos // dec_scale
-	if attos % dec_scale == 0 and whole >= 0 and whole <= 18446744073709551615 {
-		put_head(out, 0, whole.to_u64_wrap())
-	} else if attos % dec_scale == 0 and whole < 0 and whole >= -18446744073709551616 {
-		put_head(out, 1, (-1 - whole).to_u64_wrap())
-	} else {
-		put_decimal_fraction(out, attos)
+	if attos % dec_scale == 0 and whole >= -18446744073709551616 and whole <= 18446744073709551615 {
+		return Integer(whole)
+	}
+	var $mantissa = attos
+	var $exponent = -18.I64
+	while $mantissa % 10 == 0 {
+		$mantissa = $mantissa // 10
+		$exponent = $exponent + 1
+	}
+	Fraction({ exponent: $exponent, mantissa: $mantissa })
+}
+
+## The exact preferred float head and payload, without allocating an encoding.
+float_form_matches : Cbor.Reader, F64 -> Bool
+float_form_matches = |state, value| {
+	form = preferred_float(value.to_bits())
+	h = out_head(state.bytes, state.pos)
+	state.bytes.get(state.pos) == Ok(form.head) and h.arg == form.bits
+}
+
+## The next position only when the bytes are the preferred encoding of the integer `n`.
+int_form_end : List(U8), U64, I128 -> Try(U64, [NotForm])
+int_form_end = |bytes, pos, n| {
+	negative = n < 0
+	magnitude = (if (negative) -1 - n else n).to_u128_wrap()
+	h = out_head(bytes, pos)
+	if magnitude <= 18446744073709551615 {
+		arg = magnitude.to_u64_wrap()
+		return if (h.major == (if (negative) 1 else 0) and h.arg == arg and h.next == pos + head_size(arg)) Ok(h.next) else Err(NotForm)
+	}
+	if bytes.get(pos) != Ok(if (negative) 0xc3 else 0xc2) {
+		return Err(NotForm)
+	}
+	b = out_head(bytes, h.next)
+	if b.major != 2 or b.arg < 9 or b.arg > 16 or b.next != h.next + 1 or bytes.get(b.next) == Ok(0) {
+		return Err(NotForm)
+	}
+	var $got = 0.U128
+	for i in (0.U64).until(b.arg) {
+		$got = $got.shl_wrap(8).bitwise_or((bytes.get(b.next + i) ?? 0).to_u128())
+	}
+	if ($got == magnitude) Ok(b.next + b.arg) else Err(NotForm)
+}
+
+## The normalized decimal form, including shortest heads of its tag, array, exponent and mantissa.
+dec_form_matches : Cbor.Reader, I128, U64 -> Bool
+dec_form_matches = |state, attos, end| {
+	bytes = state.bytes
+	pos = state.pos
+	match preferred_dec(attos) {
+		Integer(n) => int_form_end(bytes, pos, n) == Ok(end)
+		Fraction({ exponent, mantissa }) =>
+			bytes.get(pos) == Ok(0xc4) and bytes.get(pos + 1) == Ok(0x82) and
+				int_form_end(bytes, pos + 2, exponent.to_i128()).map_ok(|next| int_form_end(bytes, next, mantissa) == Ok(end)) == Ok(Bool.True)
 	}
 }
 
@@ -3237,19 +3368,6 @@ scale_pow10 = |m, shift| {
 	Ok($v)
 }
 
-## The decimal fraction of `attos` (a nonzero count of 10^-18): the tag 4, `[exponent, mantissa]`.
-## The exponent starts at -18, and each trailing zero digit of the mantissa moves to the exponent.
-put_decimal_fraction : List(U8), I128 -> List(U8)
-put_decimal_fraction = |out, attos| {
-	var $m = attos
-	var $e = -18.I64
-	while $m % 10 == 0 {
-		$m = $m // 10
-		$e = $e + 1
-	}
-	put_mantissa(put_int(out.append(0xc4).append(0x82), $e), $m)
-}
-
 ## An integer when it fits major type 0 or 1, else a bignum: tag 2 (tag 3: -1 - n) and a byte string.
 put_mantissa : List(U8), I128 -> List(U8)
 put_mantissa = |out, m|
@@ -3287,6 +3405,7 @@ dec_scale = 1_000_000_000_000_000_000
 ReadRules : {
 	camel : Bool,
 	reject_unknown : Bool,
+	encoder_forms : Bool,
 	bool_from_int : Bool,
 	float_to_int : Bool,
 	int_from_text : Bool,
@@ -3304,6 +3423,7 @@ strict_read : ReadRules
 strict_read = {
 	camel: Bool.False,
 	reject_unknown: Bool.False,
+	encoder_forms: Bool.False,
 	bool_from_int: Bool.False,
 	float_to_int: Bool.False,
 	int_from_text: Bool.False,

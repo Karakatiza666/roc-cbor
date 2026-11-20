@@ -71,55 +71,55 @@ items = |c, add, n| {
 # Count mismatch: 0 items, 2 items, a wrong declared count, nested in a record (W2 to W5)
 
 ## The root gets exactly one item.
-expect Cbor.encode_try(Probe.Nothing) == Err(CountMismatch)
+expect encode_try_checked(Probe.Nothing) == Err(CountMismatch)
 
 ## Two items at the root (1, then 2) is an error CountMismatch.
-expect Cbor.encode_try(Probe.TwoRoot) == Err(CountMismatch)
+expect encode_try_checked(Probe.TwoRoot) == Err(CountMismatch)
 
 ## W3: one value slot writes 0 or 2 items.
-expect Cbor.encode_try(Probe.Slot(0)) == Err(CountMismatch)
+expect encode_try_checked(Probe.Slot(0)) == Err(CountMismatch)
 
 ## A value slot that writes 2 items is an error CountMismatch.
-expect Cbor.encode_try(Probe.Slot(2)) == Err(CountMismatch)
+expect encode_try_checked(Probe.Slot(2)) == Err(CountMismatch)
 
 ## A value slot that writes 1 item is fine: [7] writes 81 07.
-expect Cbor.encode_try(Probe.Slot(1)) == Ok([0x81, 0x07])
+expect encode_try_checked(Probe.Slot(1)) == Ok([0x81, 0x07])
 
 ## W2: the declared count of a list differs from the items written.
-expect Cbor.encode_try(Probe.List(3, 1)) == Err(CountMismatch)
+expect encode_try_checked(Probe.List(3, 1)) == Err(CountMismatch)
 
 ## A list declared with 1 item that writes 2 is an error CountMismatch.
-expect Cbor.encode_try(Probe.List(1, 2)) == Err(CountMismatch)
+expect encode_try_checked(Probe.List(1, 2)) == Err(CountMismatch)
 
 ## A list declared with 2 items that writes 2 writes 82 07 07.
-expect Cbor.encode_try(Probe.List(2, 2)) == Ok([0x82, 0x07, 0x07])
+expect encode_try_checked(Probe.List(2, 2)) == Ok([0x82, 0x07, 0x07])
 
 ## W1: 32 items with a declared count of 0. 0.4.1 wrote `a0 01 ..` (an empty map and stray bytes).
-expect Cbor.encode_try(Probe.List(0, 32)) == Err(CountMismatch)
+expect encode_try_checked(Probe.List(0, 32)) == Err(CountMismatch)
 
 ## W4: the payloads of a tag.
-expect Cbor.encode_try(Probe.Tag(2, 1)) == Err(CountMismatch)
+expect encode_try_checked(Probe.Tag(2, 1)) == Err(CountMismatch)
 
 ## A tag declared with 1 payload that writes 2 is an error CountMismatch.
-expect Cbor.encode_try(Probe.Tag(1, 2)) == Err(CountMismatch)
+expect encode_try_checked(Probe.Tag(1, 2)) == Err(CountMismatch)
 
 ## A tag declared with 2 payloads that writes 2 writes {"T": [7, 7]} (a1 61 54 82 07 07).
-expect Cbor.encode_try(Probe.Tag(2, 2)) == Ok([0xa1, 0x61, 0x54, 0x82, 0x07, 0x07])
+expect encode_try_checked(Probe.Tag(2, 2)) == Ok([0xa1, 0x61, 0x54, 0x82, 0x07, 0x07])
 
 ## A record gets fewer fields than declared (an absent optional field), but not more.
-expect Cbor.encode_try(Probe.Record(1, 2)) == Err(CountMismatch)
+expect encode_try_checked(Probe.Record(1, 2)) == Err(CountMismatch)
 
 ## A record declared with 2 fields that writes 1 writes {"k0": 7} with a head for 1 (a1 62 6b 30 07).
-expect Cbor.encode_try(Probe.Record(2, 1)) == Ok([0xa1, 0x62, 0x6b, 0x30, 0x07])
+expect encode_try_checked(Probe.Record(2, 1)) == Ok([0xa1, 0x62, 0x6b, 0x30, 0x07])
 
 ## W5: a field value that writes nothing, nested in a derived record and list.
-expect Cbor.encode_try({ a: 1.U64, b: Probe.Slot(0) }) == Err(CountMismatch)
+expect encode_try_checked({ a: 1.U64, b: Probe.Slot(0) }) == Err(CountMismatch)
 
 ## A record with a list that holds a value that writes nothing is an error CountMismatch.
-expect Cbor.encode_try({ a: [Probe.Nothing] }) == Err(CountMismatch)
+expect encode_try_checked({ a: [Probe.Nothing] }) == Err(CountMismatch)
 
 ## A field value that writes 1 item is fine: { a: 1, b: [7] } writes a2 61 61 01 61 62 81 07.
-expect Cbor.encode_try({ a: 1.U64, b: Probe.Slot(1) }) == Ok([0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x81, 0x07])
+expect encode_try_checked({ a: 1.U64, b: Probe.Slot(1) }) == Ok([0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x81, 0x07])
 
 # A writer or a container of another level, captured by a closure, is not accepted
 
@@ -171,27 +171,27 @@ SneakTag := U64.{
 }
 
 ## A slot that writes with the writer of the level above (Sneak) is an error CountMismatch.
-expect Cbor.encode_try(Sneak.(5)) == Err(CountMismatch)
+expect encode_try_checked(Sneak.(5)) == Err(CountMismatch)
 
 ## Sneak3 in a record field (its first slot writes with the writer of the level above) is an error CountMismatch.
-expect Cbor.encode_try({ a: Sneak3.(5), b: 1.U64 }) == Err(CountMismatch)
+expect encode_try_checked({ a: Sneak3.(5), b: 1.U64 }) == Err(CountMismatch)
 
 ## An inner list that adds to the outer list (Climb) is an error CountMismatch.
-expect Cbor.encode_try(Climb.(5)) == Err(CountMismatch)
+expect encode_try_checked(Climb.(5)) == Err(CountMismatch)
 
 ## A tagged item that writes with the writer of the level above (SneakTag) is an error CountMismatch.
-expect Cbor.encode_try(SneakTag.(5)) == Err(CountMismatch)
+expect encode_try_checked(SneakTag.(5)) == Err(CountMismatch)
 
 # W6: encode_tagged writes the tag and its one item
 
 ## encode_tagged with the tag 6 and a list of one 7 writes c6 81 07.
-expect Cbor.encode_try(Probe.Tagged(6, Probe.Slot(1))) == Ok([0xc6, 0x81, 0x07])
+expect encode_try_checked(Probe.Tagged(6, Probe.Slot(1))) == Ok([0xc6, 0x81, 0x07])
 
 ## encode_tagged of a value that writes nothing, in a list, is an error CountMismatch.
-expect Cbor.encode_try([Probe.Tagged(6, Probe.Nothing)]) == Err(CountMismatch)
+expect encode_try_checked([Probe.Tagged(6, Probe.Nothing)]) == Err(CountMismatch)
 
 ## encode_tagged of a value that writes 2 items is an error CountMismatch.
-expect Cbor.encode_try(Probe.Tagged(6, Probe.TwoRoot)) == Err(CountMismatch)
+expect encode_try_checked(Probe.Tagged(6, Probe.TwoRoot)) == Err(CountMismatch)
 
 # Shortest heads (W1, W7, W15)
 
@@ -268,10 +268,10 @@ expect {
 }
 
 ## W15: a count of 2^32 or more is not cut to 32 bits. The 9-byte form in a tag number, and a declared count with no items.
-expect Cbor.encode_try(Probe.Tagged(4294967296, Probe.Slot(1))) == Ok([0xdb, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x81, 0x07])
+expect encode_try_checked(Probe.Tagged(4294967296, Probe.Slot(1))) == Ok([0xdb, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x81, 0x07])
 
 ## A list declared with 2^32 items that writes none is an error CountMismatch.
-expect Cbor.encode_try(Probe.List(4294967296, 0)) == Err(CountMismatch)
+expect encode_try_checked(Probe.List(4294967296, 0)) == Err(CountMismatch)
 
 # Null in a record (W10, W11)
 
@@ -331,7 +331,7 @@ expect {
 }
 
 ## A list of a U8 then text (only an encoder_for of an app writes it) falls back to an array.
-expect Cbor.encode_try(Probe.Mixed) == Ok([0x82, 0x01, 0x61, 0x61])
+expect encode_try_checked(Probe.Mixed) == Ok([0x82, 0x01, 0x61, 0x61])
 
 ## Cbor.U8Array writes an array of integers.
 expect Cbor.encode(Cbor.U8Array.([1, 255])) == [0x82, 0x01, 0x18, 0xff]
@@ -341,15 +341,15 @@ expect Cbor.encode(Cbor.U8Array.([1, 255])) == [0x82, 0x01, 0x18, 0xff]
 ## fields: Camel writes other keys for user_id and display_name, which read back with Camel. With {}, the bytes are those of encode.
 expect {
 	v = { user_id: 7.U64, display_name: "Ann" }
-	bytes = Cbor.encode_with(v, { fields: Camel })
+	bytes = encode_with_checked(v, { fields: Camel })
 	back : Try({ user_id : U64, display_name : Str }, _)
 	back = bytes.map_ok(|b| Cbor.parse_with(b, { fields: Camel })) ?? Err(InvalidCbor(0))
-	snake = Cbor.encode_with(v, {})
+	snake = encode_with_checked(v, {})
 	back == Ok(v) and snake == Ok(Cbor.encode(v)) and bytes != snake
 }
 
 ## The option reaches a record in an encoder_for of an app (Cbor.encode_tagged and Cbor.encode_item).
-expect Cbor.encode_with(User.(7), { fields: Camel }) == Ok([0xc6, 0xa1, 0x66, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x07])
+expect encode_with_checked(User.(7), { fields: Camel }) == Ok([0xc6, 0xa1, 0x66, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x07])
 
 # Cbor.Bytes: the fast byte-string type
 
@@ -404,3 +404,17 @@ expect {
 
 ## is_eq, to_list and from_list.
 expect Cbor.Bytes.from_list([1, 2]) == Cbor.Bytes.from_list([1, 2]) and Cbor.Bytes.from_list([1, 2]) != Cbor.Bytes.from_list([1]) and Cbor.Bytes.from_list([3]).to_list() == [3]
+
+# Run the existing writer fixtures through both finish paths: identical bytes and errors.
+encode_with_checked : a, Cbor.WriteOptions -> Try(List(U8), [CountMismatch, DuplicateMapKey]) where [a.Cbor.Encodable([CountMismatch, DuplicateMapKey])]
+encode_with_checked = |value, options| {
+	ordinary = Cbor.encode_with(value, options)
+	reported = match Cbor.encode_item(value, Cbor.Writer.new(options)) {
+		Ok(w) => w.finish_report().map_ok(|r| r.bytes)
+		Err(e) => Err(e)
+	}
+	if (ordinary != reported) crash "finish_report differs from finish" else ordinary
+}
+
+encode_try_checked : a -> Try(List(U8), [CountMismatch, DuplicateMapKey]) where [a.Cbor.Encodable([CountMismatch, DuplicateMapKey])]
+encode_try_checked = |value| encode_with_checked(value, {})
