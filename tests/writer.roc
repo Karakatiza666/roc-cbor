@@ -72,16 +72,26 @@ items = |c, add, n| {
 
 ## The root gets exactly one item.
 expect Cbor.encode_try(Probe.Nothing) == Err(CountMismatch)
+
+## Two items at the root (1, then 2) is an error CountMismatch.
 expect Cbor.encode_try(Probe.TwoRoot) == Err(CountMismatch)
 
 ## W3: one value slot writes 0 or 2 items.
 expect Cbor.encode_try(Probe.Slot(0)) == Err(CountMismatch)
+
+## A value slot that writes 2 items is an error CountMismatch.
 expect Cbor.encode_try(Probe.Slot(2)) == Err(CountMismatch)
+
+## A value slot that writes 1 item is fine: [7] writes 81 07.
 expect Cbor.encode_try(Probe.Slot(1)) == Ok([0x81, 0x07])
 
 ## W2: the declared count of a list differs from the items written.
 expect Cbor.encode_try(Probe.List(3, 1)) == Err(CountMismatch)
+
+## A list declared with 1 item that writes 2 is an error CountMismatch.
 expect Cbor.encode_try(Probe.List(1, 2)) == Err(CountMismatch)
+
+## A list declared with 2 items that writes 2 writes 82 07 07.
 expect Cbor.encode_try(Probe.List(2, 2)) == Ok([0x82, 0x07, 0x07])
 
 ## W1: 32 items with a declared count of 0. 0.4.1 wrote `a0 01 ..` (an empty map and stray bytes).
@@ -89,16 +99,26 @@ expect Cbor.encode_try(Probe.List(0, 32)) == Err(CountMismatch)
 
 ## W4: the payloads of a tag.
 expect Cbor.encode_try(Probe.Tag(2, 1)) == Err(CountMismatch)
+
+## A tag declared with 1 payload that writes 2 is an error CountMismatch.
 expect Cbor.encode_try(Probe.Tag(1, 2)) == Err(CountMismatch)
+
+## A tag declared with 2 payloads that writes 2 writes {"T": [7, 7]} (a1 61 54 82 07 07).
 expect Cbor.encode_try(Probe.Tag(2, 2)) == Ok([0xa1, 0x61, 0x54, 0x82, 0x07, 0x07])
 
 ## A record gets fewer fields than declared (an absent optional field), but not more.
 expect Cbor.encode_try(Probe.Record(1, 2)) == Err(CountMismatch)
+
+## A record declared with 2 fields that writes 1 writes {"k0": 7} with a head for 1 (a1 62 6b 30 07).
 expect Cbor.encode_try(Probe.Record(2, 1)) == Ok([0xa1, 0x62, 0x6b, 0x30, 0x07])
 
 ## W5: a field value that writes nothing, nested in a derived record and list.
 expect Cbor.encode_try({ a: 1.U64, b: Probe.Slot(0) }) == Err(CountMismatch)
+
+## A record with a list that holds a value that writes nothing is an error CountMismatch.
 expect Cbor.encode_try({ a: [Probe.Nothing] }) == Err(CountMismatch)
+
+## A field value that writes 1 item is fine: { a: 1, b: [7] } writes a2 61 61 01 61 62 81 07.
 expect Cbor.encode_try({ a: 1.U64, b: Probe.Slot(1) }) == Ok([0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x81, 0x07])
 
 # A writer or a container of another level, captured by a closure, is not accepted
@@ -150,15 +170,27 @@ SneakTag := U64.{
 	encoder_for = |_| |SneakTag.(_), w| Cbor.encode_list(w, 1, |c, add| add(c, |v| Cbor.encode_tagged(6, Hold.(v), v)))
 }
 
+## A slot that writes with the writer of the level above (Sneak) is an error CountMismatch.
 expect Cbor.encode_try(Sneak.(5)) == Err(CountMismatch)
+
+## Sneak3 in a record field (its first slot writes with the writer of the level above) is an error CountMismatch.
 expect Cbor.encode_try({ a: Sneak3.(5), b: 1.U64 }) == Err(CountMismatch)
+
+## An inner list that adds to the outer list (Climb) is an error CountMismatch.
 expect Cbor.encode_try(Climb.(5)) == Err(CountMismatch)
+
+## A tagged item that writes with the writer of the level above (SneakTag) is an error CountMismatch.
 expect Cbor.encode_try(SneakTag.(5)) == Err(CountMismatch)
 
 # W6: encode_tagged writes the tag and its one item
 
+## encode_tagged with the tag 6 and a list of one 7 writes c6 81 07.
 expect Cbor.encode_try(Probe.Tagged(6, Probe.Slot(1))) == Ok([0xc6, 0x81, 0x07])
+
+## encode_tagged of a value that writes nothing, in a list, is an error CountMismatch.
 expect Cbor.encode_try([Probe.Tagged(6, Probe.Nothing)]) == Err(CountMismatch)
+
+## encode_tagged of a value that writes 2 items is an error CountMismatch.
 expect Cbor.encode_try(Probe.Tagged(6, Probe.TwoRoot)) == Err(CountMismatch)
 
 # Shortest heads (W1, W7, W15)
@@ -180,6 +212,7 @@ expect {
 	bytes.take_first(5) == [0x9a, 0x00, 0x01, 0x00, 0x00] and bytes.len() == 65541 and back == Ok(xs)
 }
 
+## 2^16 - 1 items: a 2-byte argument (99 ff ff).
 expect Cbor.encode(List.repeat(1.U64, 65535)).take_first(3) == [0x99, 0xff, 0xff]
 
 ## W7: a record of 24 fields with one absent: the head is written again, shortest, for 23.
@@ -210,6 +243,7 @@ Wide : {
 	c3 ?: U8,
 }
 
+## 24 fields write the head b8 18. With c3 absent, 23 fields write the head b7, and the bytes read back.
 expect {
 	full : Wide
 	full = { a0: 0, a1: 0, a2: 0, a3: 0, a4: 0, a5: 0, a6: 0, a7: 0, a8: 0, a9: 0, b0: 0, b1: 0, b2: 0, b3: 0, b4: 0, b5: 0, b6: 0, b7: 0, b8: 0, b9: 0, c0: 0, c1: 0, c2: 0, c3: 0 }
@@ -235,6 +269,8 @@ expect {
 
 ## W15: a count of 2^32 or more is not cut to 32 bits. The 9-byte form in a tag number, and a declared count with no items.
 expect Cbor.encode_try(Probe.Tagged(4294967296, Probe.Slot(1))) == Ok([0xdb, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x81, 0x07])
+
+## A list declared with 2^32 items that writes none is an error CountMismatch.
 expect Cbor.encode_try(Probe.List(4294967296, 0)) == Err(CountMismatch)
 
 # Null in a record (W10, W11)
@@ -264,6 +300,7 @@ expect {
 
 # W13: a List(U8) is a byte string
 
+## A List(U8) field [de, ad] writes a byte string (42 de ad).
 expect Cbor.encode({ k: [0xde.U8, 0xad] }) == [0xa1, 0x61, 0x6b, 0x42, 0xde, 0xad]
 
 ## An empty List(U8) is an empty array. A List(List(U8)) is an array of byte strings.
@@ -282,7 +319,11 @@ expect {
 
 ## A tuple, a record and a tag payload of U8 values are not byte strings.
 expect Cbor.encode((1.U8, 2.U8)) == [0x82, 0x01, 0x02]
+
+## A record with one U8 field writes a map: a1 61 61 01.
 expect Cbor.encode({ a: 1.U8 }) == [0xa1, 0x61, 0x61, 0x01]
+
+## A tag payload of two U8 values writes an array: {"Two": [1, 2]} (a1 63 54 77 6f 82 01 02).
 expect {
 	v : [Two(U8, U8)]
 	v = Two(1, 2)
@@ -297,6 +338,7 @@ expect Cbor.encode(Cbor.U8Array.([1, 255])) == [0x82, 0x01, 0x18, 0xff]
 
 # encode_with: the option fields
 
+## fields: Camel writes other keys for user_id and display_name, which read back with Camel. With {}, the bytes are those of encode.
 expect {
 	v = { user_id: 7.U64, display_name: "Ann" }
 	bytes = Cbor.encode_with(v, { fields: Camel })

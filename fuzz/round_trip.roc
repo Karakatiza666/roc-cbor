@@ -301,17 +301,8 @@ item = {
 	lookup: Fuzz.map(Fuzz.list(Fuzz.map({ k: Fuzz.u64, v: Fuzz.str }.Fuzz, |p| (p.k % 1000, p.v)), 6), |pairs| Dict.from_list(pairs)),
 }.Fuzz
 
-## The input of the target. roc-fuzz 0.6 saves an input in its own Binary format, which a
-## Cbor.Value (it has the codec methods of Cbor) cannot use. So the input is the raw bytes,
-## and `input` makes the value from them.
-Input : { any : List(Cbor.Value), item : Item }
-
-input : List(U8) -> Input
-input = |bytes| ({ any: Fuzz.list(any_value(4), 4), item }.Fuzz)(Arbitrary.new(bytes)).value
-
-test! : List(U8) => Fuzz.Outcome
-test! = |entropy| {
-	g = input(entropy)
+test! : { any : List(Cbor.Value), item : Item } => Fuzz.Outcome
+test! = |g| {
 	value = g.item
 	# The Cbor.Value property, for values of their own (first, so that short inputs make them) and in the item.
 	any_ok = g.any.map_with_index(|v, i| value_reads_back(v, g.any.get(i + 1) ?? v)).all(|ok| ok)
@@ -421,10 +412,29 @@ count_items = |bytes| {
 	$count
 }
 
+## The property's value, from the input bytes: the generator reads them as its entropy, as roc-fuzz's own
+## typed inputs do. The value type holds `Cbor` encoders, so it cannot have roc-fuzz's derived input format.
+input_of : List(U8) -> { any : List(Cbor.Value), item : Item }
+input_of = |bytes| ({ any: Fuzz.list(any_value(4), 4), item }.Fuzz)(Arbitrary.new(bytes)).value
+
+## An example input: the bytes 0 to 255, in order.
+ramp : List(U8)
+ramp = {
+	var $out = []
+	for n in 0..<256 {
+		$out = $out.append(n.to_u8_wrap())
+	}
+	$out
+}
+
 target = Fuzz.target_with!({
 	name: "round-trip",
-	examples: [],
+	examples: [
+		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "short", revision: "1", make: || [0x01, 0x82, 0x18, 0x2a, 0xa1, 0x61, 0x61, 0x00] }),
+		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
+	],
 	generator: Fuzz.raw_bytes,
-	test!,
-	show: |entropy| Str.inspect(input(entropy)),
+	test!: |bytes| test!(input_of(bytes)),
+	show: |bytes| Str.inspect(input_of(bytes)),
 })

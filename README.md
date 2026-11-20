@@ -29,7 +29,7 @@ Features:
 | Version | 0.5.1 (section "Changes": the format error of the 11-14 compiler; a migration table from 0.4 in 0.5.0) |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
-| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-15-f25da45`). The 11-07 nightly and older do not compile 0.5.1: use 0.5.0 with them. |
+| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-19-54c51c9`). The 11-07 nightly and older do not compile 0.5.1: use 0.5.0 with them. |
 | Reader | Strict by default. Each lenient read is a `Cbor.Leniency` in the option `allow`. |
 | Writer | Always well-formed, preferred serialization (shortest heads and floats). Deterministic with `key_order: Sorted`. |
 | Streams | Read and write data larger than memory, one item, entry or chunk at a time (section "Streams") |
