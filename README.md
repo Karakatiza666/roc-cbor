@@ -26,10 +26,10 @@ Features:
 
 | Item | Value |
 | --- | --- |
-| Version | Upstream release 0.5.1. The changes proposed here were developed in the fork’s 0.6.x previews. |
+| Version | 0.5.1. Main has changes after it that change the API (section "Changes", "Unreleased"): the next release is 0.6.0. |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
-| Compiler | The Zig compiler. CI uses `.roc-version` (`nightly-2026-11-19-54c51c9`). |
+| Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-19-54c51c9`). The 11-07 nightly and older do not compile 0.5.1 or later: use 0.5.0 with them. |
 | Reader | Strict by default. Each lenient read is a `Cbor.Leniency` in the option `allow`. |
 | Writer | Always well-formed, preferred serialization (shortest heads and floats). Deterministic with `key_order: Sorted`. |
 | Streams | Read and write data larger than memory, one item, entry or chunk at a time (section "Streams") |
@@ -207,7 +207,6 @@ read = |bytes|
 		Err(MissingRequiredField(field)) => Err("missing ${field}")
 		Err(InvalidCbor(pos)) => Err("invalid at ${pos.to_str()}")
 	}
-}
 ```
 
 `examples/round_trip.roc` uses each public item, except the stream types: `examples/stream.roc` uses those. `tests/aliases.roc` has generic helpers with `Readable` and `Writable`.
@@ -864,68 +863,34 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 
 ## Changes
 
-### Roc nightly 2026-11-19
+### Unreleased
 
-The compiler’s derived `Dict` parser calls `parse_dict_duplicate_key` when a decoded key compares equal to a key already in the dictionary. Cbor returns `InvalidCbor` at the end of that entry. The `duplicate_keys` option still handles equal CBOR keys before decoding.
-
-### Fork preview 0.6.3
-
-Encoder forms and writer reports (issues #3 and #4). Built and tested with `nightly-2026-11-14-a87808d`. Default reads and encoder bytes are unchanged.
+The changes on main after 0.5.1, from PR #1 by lukewilliamboswell (PR #3). The next release is 0.6.0, because the API
+changes (table "Migration from 0.5.1"). By default, the bytes that are read and written do not change.
 
 | Change | Detail |
 | --- | --- |
-| Typed forms | `Cbor.Options.forms ?: [Compatible, Encoder]`, default `Compatible`. `Encoder` checks typed decimals and floats against their encoder's form and refuses a definite empty byte string for an ordinary derived list. Shared float and decimal classifiers, no encoded comparison copy. |
-| Writer metadata | `Cbor.Writer.open` gives both the writer and its `Cbor`, using `WriteOptions.fields`. |
-| Writer depth | `Cbor.Writer.finish_report` gives `{ bytes, max_depth }`, with the checks and sort of `finish`. Counts physical arrays, maps and tags, including those added by scalar encoders. Shares the sorting walk; no extra output copy. |
-| Validation | `tests/forms.roc`, `tests/report.roc`, writer fixture parity through both finish paths, accepted-input re-encoding in `fuzz/round_trip.roc`, and the `report`, `report_sorted`, `report_bytes` and `report_memory` scale cases. |
-| API diff | `roc bump --old <0.6.2 bundle> src/main.roc --verbose` lists the optional `Options` field and both new writer methods. The compiler classifies the alias's added optional field as MAJOR (suggesting 0.7.0); the writer additions alone are MINOR. Version 0.6.3 retains compatible defaults. |
+| `Cbor.Error` | A name for `[InvalidCbor(U64), MissingRequiredField(Str)]`, the one error of every read. `parse`, `parse_with`, `parse_prefix`, `parse_prefix_with`, `parse_sequence`, `parse_sequence_with`, `parse_item` and `parse_union` give `Cbor.Error`, not an open union. A caller with a larger error type uses `?` as before: the union of a return type is open. |
+| `Readable` | `a.Cbor.Readable`, with no type parameter. `a.Cbor.Parseable(Cbor.Error)` is the long form. |
+| Streams | `finish` of `Cbor.Items` and `Cbor.Entries` also gives `MissingRequiredField`, as `push` does |
+| `forms` | A new read option, `forms ?: [Compatible, Encoder]` (default `Compatible`). `Encoder` reads typed `Dec`, `F32` and `F64` only in the form that their encoder writes, and a derived list refuses an empty byte string (section "Options") |
+| A format of your own | `Cbor.Reader.new` and `finish`, `Cbor.Writer.new`, `open`, `finish` and `finish_report`, `Cbor.WriterWith(s)`, `Cbor.ContainerWith(s)`, and `encode_list_carry`, `encode_tuple_carry`, `encode_tag_carry`, `encode_record_carry`, `encode_dict_carry` (section "A format of your own"). `finish_report` also gives the nesting depth of the output. |
+| Speed | A fast walk of the root item, and fast paths of the readers at a plain position: each other case goes to the general reader, with the same values and error positions. The writer checks each place when the next one opens. The writer and `skip` give an error with a `match` and no early return (roc-lang/roc#13035). UTF-8 is checked in one pass in the walk (roc-lang/roc#13025). Measured by the contributor (`--opt=speed`, `nightly-2026-11-13-03dce41`): 10k records read 9.2 to 3.5 ms and write 2.7 to 1.3 ms; 100k map keys into a `Dict` 16 to 8.0 ms, into a `Cbor.Value` 19 to 10.6 ms (peak RSS 25 to 18 MB); 10k records with unknown fields 29 to 12.5 ms; 10k texts 1.5 to 0.74 ms |
+| Compiler | CI uses `nightly-2026-11-19-54c51c9`. In that compiler, a derived `Dict` parser keeps the last value of two keys that are equal by the key type's `is_eq` (roc-lang/roc#13143), and a format cannot change that. `duplicate_keys` still applies to keys with the same bytes. |
+| Fuzz | `fuzz.sh` counts a build with warnings only (exit code 2) as a build: roc-fuzz 0.6.2 has a warning in its platform. The round-trip target also writes each accepted input again. |
+| Tests | New `tests/forms.roc`, `tests/report.roc` and `tests/outside.roc`, `examples/outside.roc`, and the scale cases `report`, `report_sorted`, `report_bytes` and `report_memory` |
 
-### Fork preview 0.6.2
+#### Migration from 0.5.1
 
-A format of your own (roc-cbor#2): a format outside the package reads and writes through `Cbor.Reader` and `Cbor.Writer`, with state of its own beside them. No change to the bytes that are read and written, or to an existing signature. Built and tested with `nightly-2026-11-13-03dce41`.
-
-| Change | Detail |
+| 0.5.1 | Unreleased (0.6.0) |
 | --- | --- |
-| Start and end | `Cbor.Reader.new` and `finish`, `Cbor.Writer.new` and `finish` (section "A format of your own") |
-| Containers with state | `Cbor.WriterWith(s)`, `Cbor.ContainerWith(s)`, and `encode_list_carry`, `encode_tuple_carry`, `encode_tag_carry`, `encode_record_carry`, `encode_dict_carry`: the item callbacks carry a value of the caller. The checks of the plain functions, and the same cost. |
-| Internals | `encode_with` is `Cbor.Writer.new`, `encode_item` and `finish`. The end of a level (`leave`) is shared by `nest` and `nest_carry`. |
-| Tests | `tests/outside.roc`: a format of its own with state (a list of handles on write, a table on read), the bytes of `encode_with`, each `CountMismatch` case, the options of `Reader.new`, and the end of a read in base64 text. `examples/outside.roc`. |
-
-### Fork preview 0.6.1
-
-Faster writes and skips. The API and the bytes that are read and written do not change. Built and tested with `nightly-2026-11-13-03dce41`.
-
-| Change | Detail |
-| --- | --- |
-| Writer | No early return of an error in the writer (workaround for [roc-lang/roc#13035](https://github.com/roc-lang/roc/issues/13035): an early return, from `?` or `return Err(e)`, makes the compiler lose the inlining of the writer). 10k records: `encode` 1.29 to 0.61 ms, `encode_try` and `encode_with` 2.93 to 0.62 ms |
-| Skip | An unknown record field or a skipped entry, with no early return (same issue): 10k records with 12 unknown fields each, 12.6 to 11.4 ms |
-
-### Fork preview 0.6.0
-
-The codec contract of the Roc compiler of 2026-11-08 and later: each format owns one error type, and each operation of a derived parser gives it. 0.5.0 does not compile with that contract (`Encoding.ParseTagUnionSpec` takes four type parameters, and a format with required record fields needs `missing_field`). The bytes that are read and written do not change.
-
-| Change | Detail |
-| --- | --- |
-| `Cbor.Error` | `[InvalidCbor(U64), MissingRequiredField(Str)]`, the one error of every read. `MissingRequiredField(name)` still names the Roc field |
-| `missing_field` | The codec protocol's method for an absent required field |
-| `parse_tag_union` | Takes `Encoding.ParseTagUnionSpec(a, Cbor, Cbor.Reader, Cbor.Error)` |
-| Reads | `parse`, `parse_with`, `parse_prefix`, `parse_prefix_with`, `parse_sequence`, `parse_sequence_with`, `parse_item` and `parse_union` give `Cbor.Error`, not an open union |
-| Streams | The item readers of `Cbor.Items` and `Cbor.Entries` are `Parseable(Cbor.Error)`. `push`, `finish` and `from_stream` give one closed union each: `Cbor.Error` with `TooLarge` (and `NotStreamable` for `Entries`, `Input(e)` from `from_stream`) |
-| `Readable` | `a.Cbor.Readable`, with no type parameter |
-| Fuzz | The targets use roc-fuzz 0.6.1, with examples |
-| Speed | Same API and bytes. fork benchmark harness (`--opt=speed`, `nightly-2026-11-13-03dce41`), time of 0.6.0 against the start of the 0.6 work: 10k records read 9.2 to 3.5 ms and write 2.7 to 1.3 ms; 100k map keys into a `Dict` 16 to 8.0 ms and into a `Cbor.Value` 19 to 10.6 ms; 10k records with unknown fields 29 to 12.5 ms; 10k texts 1.5 to 0.74 ms. A fast walk of the root item, fast paths of the readers at a plain position (each other case goes to the general reader, with the same values and error positions), and a writer that checks each place when the next one opens. The peak RSS of a `Cbor.Value` of 100k map keys: 25 to 18 MB |
-| `fuzz.sh` | A build with warnings only (exit code 2) is a build: roc-fuzz 0.6.1 has a warning in its platform |
-| CI nightly | `.roc-version` is `nightly-2026-11-13-03dce41`. The tests also pass on `nightly-2026-11-11-7679cc5` |
-
-#### Migration from 0.5
-
-| 0.5.0 | 0.6.0 |
-| --- | --- |
-| `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` | `where [a.Cbor.Parseable(Cbor.Error)]` |
 | `where [a.Cbor.Readable(errs)]` | `where [a.Cbor.Readable]` |
-| A custom `parser_for` gives `[InvalidCbor(U64)]` | It gives `Cbor.Error` |
-| A `match` on the result of a read with `Err(_)` for other errors | A `match` on `InvalidCbor` and `MissingRequiredField` is complete |
-| A `match` on `finish` of `Cbor.Items` or `Cbor.Entries` | It also gives `MissingRequiredField` (from an item, as `push` does) |
+| `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` | `where [a.Cbor.Parseable(Cbor.Error)]` |
+| A custom `parser_for` gives `[InvalidCbor(U64), MissingRequiredField(Str)]` | No change. `Cbor.Error` is the short name. |
+| A `match` on the result of a read with `Err(_)` for other errors | The branches for `InvalidCbor` and `MissingRequiredField` are complete. Remove `Err(_)`. |
+| A `match` on `finish` of `Cbor.Items` or `Cbor.Entries` | Add a branch for `MissingRequiredField` |
+| A `Cbor.Options` record in a `let` with each field and no annotation | Add the annotation `opts : Cbor.Options`, as a `let` record that is not the full record needs already (section "Options") |
+
 ### 0.5.1
 
 A port to the derived parsers of the 11-14 nightly (`nightly-2026-11-14-a87808d`). In that compiler, the format owns the error type of a parse
@@ -1103,7 +1068,7 @@ First release: the codec protocol, `Cbor.Bytes`, `parse_camel`, `parse_with`, `p
 | `Cbor.Items`: each split of the input into chunks gives the items and the error of `parse_with`, `max_buffer`, `push` and `finish` (values before an error, a cut item, an empty chunk, N items from one chunk) (37) | `roc test tests/stream.roc` |
 | `Cbor.Entries`: each split gives the entries and the error of `parse_with` of a `Dict`, duplicate keys (`Any`, `Sorted`), `max_buffer`, `push` and `finish` (38) | `roc test tests/stream_entries.roc` |
 | `Cbor.ByteChunks`, `Cbor.TextChunks`: each split gives the data and the error of `parse_with`, the UTF-8 hold back, `push` and `finish` (32) | `roc test tests/stream_chunks.roc` |
-| A format of your own with state (roc-cbor#2): `Cbor.Reader.new` and `finish`, `Cbor.Writer.new` and `finish`, the `_carry` container functions, each `CountMismatch` case, and the bytes of `encode_with` | `roc test tests/outside.roc` |
+| A format of your own with state: `Cbor.Reader.new` and `finish`, `Cbor.Writer.new` and `finish`, the `_carry` container functions, each `CountMismatch` case, and the bytes of `encode_with` | `roc test tests/outside.roc` |
 | The adapters to the builtin `Stream`: `from_stream` of each decoder, `Cbor.chunk_source` and the writer helpers (75 checks). An app, not `roc test`: a `Stream` is effectful, and an `expect` cannot run an effect. It prints each failed check and exits with 1. | `roc check tests/stream_adapters.roc`, `roc tests/stream_adapters.roc` |
 | `Dict`: `encode_dict`, keys that are not text, the form of a key, `U128`, `I128` (56) | `roc test tests/dict.roc` |
 | Indefinite lengths with `IndefiniteLength` (32) | `roc test tests/indefinite.roc` |
@@ -1120,6 +1085,7 @@ Each fix of 0.5.0 has a regression test, and each test was checked against the c
 | `scripts/fuzz.sh [runs]` | The property tests with [roc-fuzz](https://github.com/lukewilliamboswell/roc-fuzz) 0.6.2 (each target reads its input bytes as the entropy of its generators, as 0.4.3 did; the generated values hold `Cbor` encoders, so they have no derived roc-fuzz input format): a fixed count of inputs for each target in `fuzz/` (default 1,000,000, seed 1, inputs of 4,096 bytes or less, the tokens of `fuzz/cbor.dict`). Linux x86-64 and macOS arm64 only. A failure is saved in `.cache/fuzz/art-<target>/`. |
 | `scripts/scale.sh [runs]` | Complexity. Each case of `bench/scale.roc` (writer), `bench/scale_read.roc` (reader) and `bench/scale_stream.roc` (the `Stream` adapters) is its own app (`--opt=speed`), at 5k, 10k, 20k and 40k items. The time for each item must not grow more than 2.5x (n log n for a key sort, depth for the depth cases). It fails on 0.4.1 (internal unions), on a quadratic duplicate check, on a decoder that is kept and pushed again, on a walk of the open item from its start at each chunk, and on a linear scan of the keys of a streamed map. Table "Stream scale cases". |
 | `scripts/bench.sh [--check \| --update] [runs]` | Speed of `bench/bench.roc`: 0.4.1 against HEAD, or HEAD against `bench/baseline.txt` (each time divided by the time of a `calib` case; a case fails above 1.5x) |
+| `scripts/bench_ci_baseline.sh RUN_ID RUN_ID RUN_ID...` | Writes `bench/baseline-ci.txt`, the CI baseline, from the bench logs of 3 or more CI runs of the same code (the median of each case) |
 | `scripts/differential.sh [count] [seed]` | `Cbor.Value` against Python `cbor2` 6.2.1 on the fuzz corpus, the RFC vectors and random items with mutations. A difference that is not in the table of `differential/differential.py` fails. `DIFF_STRICT=1`: padded numbers (no `PaddedNumbers`) are an expected difference. |
 | `scripts/bundle.sh` | Makes `dist/<hash>.tar.zst` and prints its release URL |
 | `scripts/test_bundle.sh` | Runs the examples against that file (served on `127.0.0.1`), or against a release URL, with `--replace-dep` |
@@ -1230,9 +1196,9 @@ Issue drafts for the rows with no issue wait for the maintainer. The repros of #
 | `examples/stream.roc` | An app that writes and reads with each `Stream` adapter, with a source error. The same echo host. |
 | `examples/outside.roc` | An app with a format of its own: a payload with handles beside it, written and read back. The same echo host. |
 | `fuzz/` | The roc-fuzz targets and the dictionary of CBOR tokens |
-| `bench/` | `bench.roc` and `baseline.txt` (`scripts/bench.sh`), `scale.roc`, `scale_read.roc` and `scale_stream.roc` (`scripts/scale.sh`) |
+| `bench/` | `bench.roc`, `baseline.txt` and `baseline-ci.txt` (`scripts/bench.sh`), `scale.roc`, `scale_read.roc` and `scale_stream.roc` (`scripts/scale.sh`) |
 | `differential/` | `value_dump.roc` (the Roc side) and `differential.py` (the `cbor2` side and the table of expected differences) |
-| `scripts/` | `all_tests.sh`, `fuzz.sh`, `scale.sh`, `bench.sh`, `differential.sh`, `wasm_dev.sh`, `bundle.sh`, `test_bundle.sh` |
+| `scripts/` | `all_tests.sh`, `fuzz.sh`, `scale.sh`, `bench.sh`, `bench_ci_baseline.sh`, `differential.sh`, `wasm_dev.sh`, `bundle.sh`, `test_bundle.sh` |
 | `.roc-version` | The nightly of CI and of the releases |
 
 The bundle has the files of `src/` that `main.roc` imports: `main.roc` and `Cbor.roc`.

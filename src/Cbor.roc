@@ -1866,13 +1866,6 @@ Cbor :: {
 			End(s) => Ok(Done(s))
 		}
 
-	## Codec protocol: the derived `parser_for` of a `Dict` calls it after an entry whose Roc key equals a key the
-	## `Dict` already holds. `duplicate_keys` has already settled keys that are the same `Cbor.Value`, so two keys
-	## here are different in the bytes and equal only to the key type's `is_eq`. That is an error at the end of the
-	## entry: the reader never chooses one of two different keys.
-	parse_dict_duplicate_key : Cbor, Cbor.Reader -> Try([KeepFirst(Cbor.Reader), KeepLast(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
-	parse_dict_duplicate_key = |_, state| Err(InvalidCbor(state.pos))
-
 	# No `parse_key_start` and no `encode_key_start`: a `Dict` key of a composite type (a `Cbor.Value`, a record, a tuple,
 	# a type of your own) is a compile error. Its own parser can read two different keys as one Roc key (a record skips
 	# unknown fields), so the Dict would lose an entry with no error. The Roc compiler (nightly 2026-10-19) also crashes
