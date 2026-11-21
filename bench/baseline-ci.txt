@@ -1,23 +1,23 @@
 # baseline-ci.txt: written by scripts/bench_ci_baseline.sh from CI runs. Do not edit by hand.
-# head=c7c905d 7c70f9d 7878926 date=2026-11-19 machine=ubuntu-24.04 (GitHub runner) runs=43952899013 43961397201 44534302468 (median)
+# head=da5aae4 646c7ad 646c7ad 646c7ad date=2026-11-21 machine=ubuntu-24.04 (GitHub runner) runs=44932624873 44932663104 44932978916 44933569026 (median)
 # case loops ms_per_loop normalized (ms / calib ms)
-calib 378 1.1280 1.0000
-bytes_encode 24242 0.0277 0.0246
-bytes_parse 1812598 0.0002 0.0002
-u8list_encode 12 41.8449 37.0374
-u8list_parse 11 16.9029 14.9848
-records_encode 48 5.4473 4.8292
-records_parse 15 13.7355 12.1575
-records_value 12 22.0508 19.5174
-camel_parse 7 25.1811 22.2881
-reject_parse 10 18.5780 16.4699
-unknown_parse 4 44.1922 39.1151
-unions_parse 23 6.9421 6.1445
-unions_content 25 6.9819 6.1798
-trees_parse 26 11.3834 10.0756
-deep_encode 7855 0.0214 0.0189
-deep_parse 4007 0.0614 0.0544
-dict_parse 9 28.4286 25.1930
-map_value 4 36.4048 32.2223
-path_map 29 5.9596 5.2749
-text_parse 108 2.3542 2.0871
+calib 378 0.5172 1.0000
+bytes_encode 24242 0.0305 0.0563
+bytes_parse 1812598 0.0002 0.0003
+u8list_encode 12 4.0474 7.2432
+u8list_parse 11 16.7984 31.6900
+records_encode 48 1.3176 2.5299
+records_parse 15 6.7503 13.0503
+records_value 12 12.7101 24.2987
+camel_parse 7 18.3280 35.4335
+reject_parse 10 12.4332 24.0373
+unknown_parse 4 23.3660 45.1735
+unions_parse 23 4.9534 9.5763
+unions_content 25 4.9398 9.5502
+trees_parse 26 9.3954 18.1640
+deep_encode 7855 0.0164 0.0315
+deep_parse 4007 0.0488 0.0944
+dict_parse 9 14.5207 28.0729
+map_value 4 21.4992 40.8295
+path_map 29 4.7702 9.1722
+text_parse 108 7.1532 13.7692
