@@ -7822,6 +7822,101 @@ expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_depth: 1 }))
 ## PaddedNumbers (no shortest heads): the fast walk agrees with walk_from.
 expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, shortest_heads: Bool.False }))
 
+## Pieces of CBOR for `random_walk_input`: heads of each major type (short and long, definite and indefinite),
+## keys that repeat, cut and long arguments, bad UTF-8, a break, reserved and simple values.
+walk_tokens : List(List(U8))
+walk_tokens = [
+	[0x00],
+	[0x01],
+	[0x17],
+	[0x18, 0x01],
+	[0x18, 0x18],
+	[0x19, 0x00, 0x01],
+	[0x1a],
+	[0x1c],
+	[0x20],
+	[0x38, 0x05],
+	[0x40],
+	[0x41, 0x01],
+	[0x42],
+	[0x5f],
+	[0x60],
+	[0x61, 0x61],
+	[0x61, 0x62],
+	[0x62, 0xc3, 0x28],
+	[0x63, 0xe6, 0xbc, 0xa2],
+	[0x78, 0x01, 0x61],
+	[0x7f],
+	[0x80],
+	[0x81],
+	[0x82],
+	[0x83],
+	[0x98, 0x02],
+	[0x9f],
+	[0xa0],
+	[0xa1],
+	[0xa2],
+	[0xb8, 0x01],
+	[0xbf],
+	[0xc1],
+	[0xc6],
+	[0xd8, 0x18],
+	[0xf4],
+	[0xf6],
+	[0xf8, 0x1f],
+	[0xf8, 0x20],
+	[0xf9, 0x3c, 0x00],
+	[0xfa, 0x00],
+	[0xfb, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+	[0xfc],
+	[0xff],
+	[0x9a, 0xff, 0xff, 0xff, 0xff],
+	[0x18, 0x17],
+	[0x1a, 0x00, 0x00, 0xff, 0xff],
+	[0x1a, 0x00, 0x01, 0x00, 0x00],
+	[0x1b, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff],
+]
+
+## A pseudorandom input of 1 to 12 tokens of `walk_tokens`, from the seed (a 64-bit LCG), and the next seed.
+random_walk_input : U64 -> (List(U8), U64)
+random_walk_input = |seed| {
+	next = |s| s.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
+	var $s = next(seed)
+	count = $s.shr_zf_wrap(33) % 12 + 1
+	var $out = []
+	var $i = 0.U64
+	while $i < count {
+		$s = next($s)
+		$out = $out.concat(walk_tokens.get($s.shr_zf_wrap(33) % walk_tokens.len()) ?? [])
+		$i = $i + 1
+	}
+	($out, $s)
+}
+
+## A property with a fixed count: 3000 pseudorandom inputs (seed 1), each with 7 sets of rules. The fast walk
+## gives the same end, keys to skip and error position as walk_from alone.
+expect {
+	rule_sets = [
+		strict,
+		loose,
+		any_length,
+		{ ..strict, keys: First },
+		{ ..strict, keys: Last },
+		{ ..strict, max_items: 3 },
+		{ ..strict, max_depth: 1, shortest_heads: Bool.False },
+	]
+	var $seed = 1.U64
+	var $n = 0.U64
+	var $ok = Bool.True
+	while $ok and $n < 3000 {
+		(bytes, s) = random_walk_input($seed)
+		$seed = s
+		$ok = rule_sets.all(|rules| same_as_general(bytes, rules))
+		$n = $n + 1
+	}
+	$ok
+}
+
 ## Each cut of a record list: the error at the same position.
 expect {
 	bytes = [0x82, 0xa2, 0x62, 0x69, 0x64, 0x01, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x62, 0x78, 0x79, 0xa0]

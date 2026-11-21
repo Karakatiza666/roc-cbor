@@ -45,7 +45,7 @@ mkdir -p "$ROC_CACHE_DIR"
 # A format of your own with state of its own: Cbor.Reader.new and finish, Cbor.Writer.new and finish, and the
 # _carry container functions, with each CountMismatch case and the bytes of encode_with.
 "$ROC" test tests/outside.roc
-# Encoder forms (issue #3) and physical writer depth / metadata (issue #4).
+# Encoder forms (the read option forms), and the writer depth and metadata (Cbor.Writer.open, finish_report).
 "$ROC" test tests/forms.roc
 "$ROC" test tests/report.roc
 # The adapters to the builtin Stream: from_stream of each decoder, and the writer adapters. An app, not roc test: a

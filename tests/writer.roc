@@ -417,4 +417,9 @@ encode_with_checked = |value, options| {
 }
 
 encode_try_checked : a -> Try(List(U8), [CountMismatch, DuplicateMapKey]) where [a.Cbor.Encodable([CountMismatch, DuplicateMapKey])]
-encode_try_checked = |value| encode_with_checked(value, {})
+encode_try_checked = |value| {
+	# Cbor.encode_try has its own finish (no options, no sort): the same bytes and errors as encode_with with {}.
+	direct = Cbor.encode_try(value)
+	checked = encode_with_checked(value, {})
+	if (direct != checked) crash "encode_try differs from encode_with" else checked
+}
