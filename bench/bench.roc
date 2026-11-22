@@ -5,6 +5,7 @@ app [] { pkg: "../src/main.roc" }
 # it builds the input and does no timed work. The output is a checksum, so that the work is not removed.
 # The case `calib` does plain Roc work with no CBOR: `bench.sh --check` divides each time by its time.
 # The inputs of the parse cases are raw bytes (no Cbor.Value), so the cases build on 0.4.1 and on HEAD.
+# `bench dump <fixture>` prints the input bytes of a fixture as hex (see `fixture`); it times nothing.
 
 import pkg.Cbor
 
@@ -375,8 +376,44 @@ run = |case, loops, seed|
 		_ => Err(UnknownCase)
 	}
 
+## The input bytes of a fixture, for the roc-cbor-bench repo (the other languages parse the same bytes).
+## `bench dump <name>` prints them as lower-case hex on stdout, with no newline at the end. The names
+## are bytes, records, wide, dict, texts and deep; the seed is 0, as in a normal run. An unknown name
+## prints "unknown fixture" and exits with code 2.
+fixture : Str, U64 -> Try(List(U8), [UnknownCase])
+fixture = |name, seed|
+	match name {
+		"bytes" => Ok(Cbor.encode(to_blob(List.repeat(0xab.U8, 1_000_000 + seed))))
+		"records" => Ok(Cbor.encode(records(seed)))
+		"wide" => Ok(Cbor.encode(wides(seed)))
+		"dict" => Ok(dict_bytes(seed))
+		"texts" => Ok(texts_bytes(seed))
+		"deep" => Ok(deep_bytes(seed))
+		_ => Err(UnknownCase)
+	}
+
+## Lower-case hex of the bytes.
+to_hex : List(U8) -> Str
+to_hex = |bytes| {
+	digit = |n| if (n < 10) n + 0x30 else n + 0x57
+	out = bytes.fold(List.with_capacity(bytes.len() * 2), |acc, b| acc.append(digit(b.shr_zf_wrap(4))).append(digit(b.bitwise_and(0xf))))
+	Str.from_utf8(out) ?? ""
+}
+
 main! = |args| {
 	case = args.get(0) ?? ""
+	if case == "dump" {
+		match fixture(args.get(1) ?? "", args.len() // 8) {
+			Ok(bytes) => {
+				echo!(to_hex(bytes))
+				return Ok({})
+			}
+			Err(_) => {
+				echo!("unknown fixture\n")
+				return Err(Exit(2))
+			}
+		}
+	}
 	loops = U64.from_str(args.get(1) ?? "0") ?? 0
 	# The seed is 0 (2 args), but the compiler cannot know it.
 	seed = args.len() // 8
