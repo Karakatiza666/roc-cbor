@@ -800,23 +800,12 @@ input = Fuzz.map2(Fuzz.u64, Fuzz.raw_bytes, |seed, bytes| { seed, bytes })
 input_of : List(U8) -> { seed : U64, bytes : List(U8) }
 input_of = |bytes| (input)(Arbitrary.new(bytes)).value
 
-## An example input: the bytes 0 to 255, in order.
-ramp : List(U8)
-ramp = {
-	var $out = []
-	for n in 0..<256 {
-		$out = $out.append(n.to_u8_wrap())
-	}
-	$out
-}
-
 target = Fuzz.target_with!({
 	name: "stream",
-	examples: [
-		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
-		Fuzz.example({ name: "short", revision: "1", make: || [0x01, 0x82, 0x18, 0x2a, 0xa1, 0x61, 0x61, 0x00] }),
-		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
-	],
+	# No examples: roc-fuzz seeds the exploration with them, and from these seeds it soon makes larger, valid
+	# inputs, which cost this property about 3 times as much each (1,000,000 runs took more than 5.4 h on CI, against
+	# 2 h 18 min from an empty corpus). The other targets are cheap per input, so they keep their examples.
+	examples: [],
 	generator: Fuzz.raw_bytes,
 	test!: |bytes| test!(input_of(bytes)),
 	show: |bytes| Str.inspect(input_of(bytes)),
