@@ -21,8 +21,8 @@
 # Test of the test: with the slot of 7ad0ee6 (WASM_DEV_PKG pointing to a copy of that src/), nightly-2026-10-19
 # traps in 6 of 7 cases, and nightly-2026-11-06 measures about 52 KB for each level (with the fix: about 15 KB).
 #
-# The host is node: tests/wasm_dev/run.mjs gives roc_alloc and the other imports. The platform has no host code:
-# roc needs a relocatable wasm object, so the script writes an empty one (only a "linking" section).
+# The host is node: tests/wasm_dev/run.mjs gives roc_alloc and the other imports. Roc also needs a relocatable
+# wasm object with a nonempty symbol table.
 set -euo pipefail
 ROC="${ROC:-roc}"
 cd "$(dirname "$0")/.."
@@ -37,8 +37,13 @@ work="$root/.cache/wasm_dev"
 rm -rf "$work"
 mkdir -p "$work/platform/targets/wasm32"
 cp tests/wasm_dev/platform/main.roc "$work/platform/main.roc"
-# The empty object: the wasm header, then a custom section "linking" with version 2.
-printf '\0asm\1\0\0\0\0\011\007linking\002' >"$work/platform/targets/wasm32/host.wasm"
+# The object contains one no-op function named "stub". Node supplies the actual host functions.
+{
+	printf '\0asm\1\0\0\0'                        # Header
+	printf '\1\4\1\140\0\0'                   # Type: () -> ()
+	printf '\3\2\1\0\12\4\1\2\0\13'      # Function and code
+	printf '\0\24\7linking\2\10\11\1\0\0\0\4stub' # Linking v2, one function symbol
+} >"$work/platform/targets/wasm32/host.wasm"
 opt="${WASM_DEV_OPT:-dev}"
 # Two apps: app.roc (the encode shapes, Cbor.Items, Cbor.StreamWriter, the Stream adapters) and entries.roc (Cbor.Entries, in an app of its
 # own: in app.roc its code made `deep` trap on nightly 2026-10-19). Each one with its expected checksums.

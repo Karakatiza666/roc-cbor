@@ -27,7 +27,7 @@ Shape := [Dot, Box({ w : U32, label : Try(Str, [Missing]) }), Size(U64), Counts(
 
 ## Tag names in upper snake case, an internal tag `op`.
 Act := [Create, NotFound, SetMode(Shape), Move({ to : Str })].{
-	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Act, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]))
+	parser_for : Cbor -> (Cbor.Reader -> Try({ value : Act, rest : Cbor.Reader }, Cbor.Error))
 	parser_for = |encoding| |state| {
 		parsed = Cbor.parse_union(encoding, { unions: Internal({ tag: "op", content: "value" }), tags: Upper }, state)?
 		Ok({ value: Act.(parsed.value), rest: parsed.rest })
@@ -35,7 +35,7 @@ Act := [Create, NotFound, SetMode(Shape), Move({ to : Str })].{
 }
 
 ## The error position is in the input, or at its end.
-in_input : Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]), U64 -> Bool
+in_input : Try(a, Cbor.Error), U64 -> Bool
 in_input = |r, len|
 	match r {
 		Err(InvalidCbor(pos)) => pos <= len
@@ -148,7 +148,7 @@ test! = |bytes| {
 	raw_row = Cbor.parse_with(bytes, tag_opts)
 	raw_last : Try(Cbor.Raw, _)
 	raw_last = Cbor.parse_with(bytes, last)
-	if raw_item.is_ok() != any.is_ok() or raw_item != Cbor.Raw.from_bytes(bytes) or raw_last.is_ok() != last_any.is_ok() {
+	if raw_item.is_ok() != any.is_ok() or raw_item != Cbor.Raw.from_bytes(bytes).map_err(|InvalidCbor(pos)| InvalidCbor(pos)) or raw_last.is_ok() != last_any.is_ok() {
 		crash "Cbor.Raw does not agree with Cbor.Value"
 	}
 	if raw_item.map_ok(|r| r.to_bytes() == bytes) == Ok(Bool.False) or raw_last.map_ok(|r| r.to_bytes() == bytes) == Ok(Bool.False) {
@@ -258,9 +258,23 @@ test! = |bytes| {
 	Fuzz.keep
 }
 
+## An example input: the bytes 0 to 255, in order.
+ramp : List(U8)
+ramp = {
+	var $out = []
+	for n in 0..<256 {
+		$out = $out.append(n.to_u8_wrap())
+	}
+	$out
+}
+
 target = Fuzz.target_with!({
 	name: "parse-never-crashes",
-	examples: [],
+	examples: [
+		Fuzz.example({ name: "empty", revision: "1", make: || [] }),
+		Fuzz.example({ name: "short", revision: "1", make: || [0x01, 0x82, 0x18, 0x2a, 0xa1, 0x61, 0x61, 0x00] }),
+		Fuzz.example({ name: "ramp", revision: "1", make: || ramp }),
+	],
 	generator: Fuzz.raw_bytes,
 	test!,
 	show: |bytes| Str.inspect(bytes),

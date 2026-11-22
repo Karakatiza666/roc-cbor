@@ -56,9 +56,11 @@ jobs:
         with: { name: fuzz-failures, path: .cache/fuzz/art-*, if-no-files-found: ignore }
   # Complexity of the writer and the reader: each case must stay linear (n log n for a key sort).
   # A smaller item budget keeps the job short; a complexity bug still gives a ratio of 4 or more.
+  # Each case is an app of its own. The 11-19 nightly builds an app in about twice the time of the 11-15 nightly
+  # (bench/bench.roc: 45 s, was 21 s), so the job takes about 30 minutes (14 with the 11-15 nightly).
   scale:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 45
     permissions: { contents: read }
     steps:
       - uses: actions/checkout@v7

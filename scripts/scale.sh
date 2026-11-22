@@ -10,6 +10,7 @@
 #   SCALE_PKG     the package main.roc, relative to .cache/scale (default ../../src/main.roc).
 #   SCALE_BIG=1   adds stream_5gb (a few seconds): SCALE_BIG_BYTES (default 5000000000) bytes through the stream adapters.
 #   SCALE_MEMORY_SIZES  the item counts of stream_memory (default "250000 1000000").
+#   SCALE_REPORT_MEMORY_SIZES  byte counts for report_memory (default "16777216 67108864").
 #   SCALE_VMEM    the virtual memory limit in KiB (ulimit -v) of each run of a memory case (default 524288), so a
 #                 memory bug fails fast.
 #
@@ -39,6 +40,7 @@
 #   stream_5gb (SCALE_BIG=1): a byte string of n / 8 and n bytes. FAIL when the RSS is more than 65536 KiB, or the time
 #     for each byte at n is more than 2.5 times the time at n / 8.
 # Test of the test: SCALE_PKG pointed to a copy of src/ where the decoder keeps all of its input makes both FAIL.
+# report_memory budgets one held input and one output plus 8 MiB. An extra output copy in finish_report makes it FAIL.
 #
 # Tests of the stream tests (step 9): a walk of the open item from its start at each chunk (walk_item ignores its
 # Open state) makes stream_big_item FAIL at 20k; a KeySet lookup that scans each key makes stream_keys_dup FAIL at 20k.
@@ -57,19 +59,19 @@ export ROC_CACHE_DIR="${ROC_CACHE_DIR:-$root/.cache/roc}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$root/.cache/xdg}"
 work="$root/.cache/scale"
 mkdir -p "$work"
-writer_cases="u64 records lists tuples tags nested absent u8lists bytes tagged fallback value dict_encode sorted_records sorted_map stream_array stream_sorted"
+writer_cases="report report_sorted report_bytes u64 records lists tuples tags nested absent u8lists bytes tagged fallback value dict_encode sorted_records sorted_map stream_array stream_sorted"
 reader_cases="rec rec_camel rec_reject rec_unknown val_list val_map val_deep val_deep_wide path_array path_map union_tag union_content union_nested union_nested_content union_depth dup_record dup_value dup_prefix sorted_keys dup_first dup_last text_list text_one bytes_one u8list_one b64_bytes b64_list dict stream_items stream_entries stream_keys stream_keys_dup stream_big_item stream_trap_reset stream_trap_return stream_bytes stream_text"
 # The adapters to the builtin Stream (bench/scale_stream.roc: an effectful `run!`).
 adapter_cases="stream_adapter stream_adapter_items stream_adapter_write"
-# The memory cases (bench/scale_stream.roc), after the timed cases.
-memory_cases=" stream_memory stream_5gb "
+# The memory cases (bench/scale.roc and bench/scale_stream.roc), after the timed cases.
+memory_cases=" report_memory stream_memory stream_5gb "
 big_cases=""
 if [ "${SCALE_BIG:-0}" = 1 ]; then big_cases="stream_5gb"; fi
 nlogn_cases=" sorted_map val_map dup_record dup_value dup_prefix dup_first dup_last dict stream_keys stream_keys_dup "
 # The cases where the size is a depth: the depth limit (512) keeps them small.
 depth_cases=" union_depth "
 read -r -a depth_sizes <<<"${SCALE_DEPTH_SIZES:-30 60 120 240}"
-read -r -a cases <<<"${SCALE_CASES:-$writer_cases $reader_cases $adapter_cases stream_memory $big_cases}"
+read -r -a cases <<<"${SCALE_CASES:-$writer_cases $reader_cases $adapter_cases report_memory stream_memory $big_cases}"
 read -r -a sizes <<<"${SCALE_SIZES:-5000 10000 20000 40000}"
 items="${SCALE_ITEMS:-400000}"
 # The package of the apps, relative to .cache/scale. A test of the test can point it to a changed copy of src/.
@@ -151,7 +153,9 @@ rss_run() {
 # The row of one memory case: the max RSS and time at each size, and the check.
 memory_case() {
 	local msizes r rss ns first_rss="" first_ns="" first_n="" verdict="ok" row=()
-	if [ "$1" = stream_5gb ]; then
+	if [ "$1" = report_memory ]; then
+		read -r -a msizes <<<"${SCALE_REPORT_MEMORY_SIZES:-16777216 67108864}"
+	elif [ "$1" = stream_5gb ]; then
 		local big="${SCALE_BIG_BYTES:-5000000000}"
 		msizes=("$((big / 8))" "$big")
 	else
@@ -169,7 +173,11 @@ memory_case() {
 		if [ -z "$first_rss" ]; then
 			first_rss=$rss first_ns=$ns first_n=$n
 		fi
-		if [ "$rss" -gt 65536 ]; then verdict=FAIL; fi
+		if [ "$1" = report_memory ]; then
+			# The input is held by the repeat closure. Budget one input and one output plus 8 MiB;
+			# a third output-sized allocation during finish_report fails at both sizes.
+			if [ "$rss" -gt $((2 * n / 1024 + 8192)) ]; then verdict=FAIL; fi
+		elif [ "$rss" -gt 65536 ]; then verdict=FAIL; fi
 		if [ "$1" = stream_memory ] && [ $((rss - first_rss)) -gt "${SCALE_MEMORY_GROWTH:-8192}" ]; then verdict=FAIL; fi
 		if [ "$1" = stream_5gb ] && [ "$n" != "$first_n" ]; then
 			verdict=$(awk -v a="$first_ns" -v b="$ns" -v s0="$first_n" -v s="$n" -v v="$verdict" 'BEGIN {

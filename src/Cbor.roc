@@ -57,6 +57,7 @@ Cbor :: {
 	## | --- | --- | --- |
 	## | `fields` | `Snake` | `Snake`: a record field `user_id` reads the key `user_id`. `Camel`: it reads the key `userId`. A key that is the key of two fields (`a_1` and `a1`) is an error at the key. |
 	## | `allow` | `[]` | The lenient reads (`Cbor.Leniency`). `[]` is strict. `Cbor.sql_rows` gives the rules of 0.4. |
+	## | `forms` | `Compatible` | `Encoder`: typed `Dec`, `F32` and `F64` read only their encoder's exact form, overriding leniencies for them. An ordinary derived list refuses a definite empty byte string; `parse_bytes` and `Cbor.Bytes` still read it. Other types and skipped items keep their rules. |
 	## | `duplicate_keys` | `Reject` | A key that is two times in one map. `Reject`: an error at the second key. `First`, `Last`: that instance is read, and the other ones are skipped. The same rule for each map: a record, a `Dict`, an internal tag, a `Cbor.Value`. Keys are the same when they are the same `Cbor.Value` (`is_eq`). |
 	## | `key_order` | `Any` | `Any`: the keys of a map can come in any order. `Sorted`: the keys of each map must be in the order of RFC 8949 4.2.1, the bytewise order of the deterministic encoding of each key (the order of `encode_with(value, { key_order: Sorted })`). A key that comes before the key in front of it in this order is an error at the key. Equal keys are adjacent, and `duplicate_keys` applies to them. The same rule for each map. |
 	## | `unknown_fields` | `Skip` | A key of a map read as a record that is not a field of the record. `Skip`: the entry is skipped. `Reject`: an error at the key. |
@@ -71,6 +72,7 @@ Cbor :: {
 	Options : {
 		fields ?: [Snake, Camel],
 		allow ?: List(Cbor.Leniency),
+		forms ?: [Compatible, Encoder],
 		duplicate_keys ?: [Reject, First, Last],
 		key_order ?: [Any, Sorted],
 		unknown_fields ?: [Skip, Reject],
@@ -156,6 +158,22 @@ Cbor :: {
 		chunks : Bool,
 		# The lists that most parses do not use (`ReaderMemo`). `Plain` when each one is empty.
 		memo : [Plain, Memo(Box(ReaderMemo))],
+	}.{
+
+		## Starts a read of your own, for a format outside the package (section "A format of your own"). The checks of
+		## `parse_with` with `options` come first, on all of `bytes` (the walk), and `bytes` must be exactly one item:
+		## bytes after it are `InvalidCbor` at the first of them. Gives the `Cbor` that each `parse_*` method takes,
+		## and the reader at the item.
+		new : List(U8), Cbor.Options -> Try({ cbor : Cbor, reader : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
+		new = |bytes, options| {
+			setup = parse_setup(options)
+			walked = walk(reader(bytes), setup.rules, Bool.False)?
+			if (walked.pos == bytes.len()) Ok({ cbor: setup.cbor, reader: at(walked, 0) }) else Err(InvalidCbor(walked.pos))
+		}
+
+		## Ends a read of your own: `Ok({})` when the reader is at the end of the bytes, else `InvalidCbor` at the reader.
+		finish : Cbor.Reader -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str)])
+		finish = |state| if (state.pos == state.bytes.len() and memo_of(state).outer.is_empty()) Ok({}) else Err(InvalidCbor(state.pos))
 	}
 
 	## The output of an encode. The derived `encoder_for` of a type passes it from item to item, and
@@ -164,8 +182,10 @@ Cbor :: {
 	Writer :: {
 		out : List(U8),
 		st : {
-			# The places for items still open at the current level.
+			# The places of the current level that no `add_*` call has opened yet.
 			left : U64,
+			# The open place has no item yet: the next item takes it (`begin`). A place is opened by `slot`.
+			owe : Bool,
 			# The current list: its head is still to write (Pending), or it is a byte string (Bytes).
 			list : [Plain, Pending(U64), Bytes({ start : U64, count : U64 })],
 			# The id of the current level, and the next free id. A callback must give back a writer of its own level.
@@ -178,12 +198,41 @@ Cbor :: {
 			# The bytes of old record heads, removed at the end of the encode.
 			gaps : List({ at : U64, len : U64 }),
 			fields : [Snake, Camel],
+			# `key_order: Sorted`: `finish` sorts each map.
+			sorted : Bool,
 		},
+	}.{
+
+		## Starts a write of your own of one root item, for a format outside the package (section "A format of your own").
+		## `fields` and `key_order` apply as in `encode_with`.
+		new : Cbor.WriteOptions -> Cbor.Writer
+		new = |options| new_writer(options.?fields ?? Snake, (options.?key_order ?? Given) == Sorted)
+
+		## Starts a write and gives the matching format value for `rename_field`, `missing_field` and `encode_key_str`.
+		open : Cbor.WriteOptions -> { cbor : Cbor, writer : Cbor.Writer }
+		open = |options| { cbor: with_fields(options.?fields ?? Snake), writer: Cbor.Writer.new(options) }
+
+		## Ends a write with its physical depth: arrays, maps and tags add a level, including empty containers,
+		## decimal fractions and bignums. Strings add no level. The same limit as the reader's `max_depth`.
+		## Shares the map-sort walk with `Sorted`; otherwise adds one structure walk, with no copy of the bytes.
+		finish_report : Cbor.Writer -> Try({ bytes : List(U8), max_depth : U64 }, [CountMismatch, DuplicateMapKey, ..err])
+		finish_report = |w| finish_writer_report(w)
+
+		## Ends a write of your own: the bytes, with the checks of `encode_with` (`CountMismatch`, then `DuplicateMapKey`)
+		## and the sort of `key_order: Sorted`.
+		finish : Cbor.Writer -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])
+		finish = |w| finish_writer(w)
 	}
 
 	## The writer inside a list, a tuple, a record or a tag. Only the `add` callback of
 	## `encode_list` (and the like) can write to it, one item for each call.
 	Container :: Cbor.Writer
+
+	## A writer with a value of the caller beside it: the state of a write of a format outside the package.
+	WriterWith(s) : { writer : Cbor.Writer, state : s }
+
+	## A container with the value of the caller.
+	ContainerWith(s) : { container : Cbor.Container, state : s }
 
 	## The options of `encode_with`. Each field is optional: `{}` is the same as `encode`.
 	##
@@ -394,8 +443,13 @@ Cbor :: {
 			)
 	}
 
+	## The error of every read: the position of the first byte that is not valid, not in the profile, or does not
+	## fit the type (`InvalidCbor`), or a required field of a record that is absent, by its Roc name
+	## (`MissingRequiredField`). The codec protocol makes it the one error of every operation of a derived parser.
+	Error : [InvalidCbor(U64), MissingRequiredField(Str)]
+
 	## A type that `Cbor.parse` can read. Use it in the `where` clause of a function that calls
-	## `Cbor.parse` with a type variable: `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]`.
+	## `Cbor.parse` with a type variable: `where [a.Cbor.Parseable(Cbor.Error)]`.
 	a.Parseable(errs) :
 		where [
 			a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, errs)),
@@ -408,15 +462,10 @@ Cbor :: {
 			a.encoder_for : Cbor -> (a, Cbor.Writer -> Try(Cbor.Writer, err)),
 		]
 
-	## The short form of `Cbor.Parseable`. The errors `InvalidCbor(U64)` and
-	## `MissingRequiredField(Str)` are in the alias. `errs` is the rest of the open union. Each parser gives
-	## the error type of the format, `[InvalidCbor(U64), MissingRequiredField(Str)]`, so `errs` is `[]`.
-	## `where [a.Cbor.Readable(errs)]` is the same as
-	## `where [a.Cbor.Parseable([InvalidCbor(U64), MissingRequiredField(Str), ..errs])]`.
-	## The compiler does not allow `..` in an alias, so a form with no `errs` is not possible.
-	a.Readable(errs) :
+	## The short form of `Cbor.Parseable(Cbor.Error)`: `where [a.Cbor.Readable]`.
+	a.Readable :
 		where [
-			a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str), ..errs])),
+			a.parser_for : Cbor -> (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, Cbor.Error)),
 		]
 
 	## The short form of `Cbor.Encodable([])`: a type that `Cbor.encode` can write. Use it as
@@ -977,7 +1026,7 @@ Cbor :: {
 		## The end of the input: `Ok({})` when the root array, or the last item of the sequence, ended at the last byte.
 		## Else the error of the cut item, or of the open array. Each item is self-delimiting, so `push` already gave
 		## each whole item: `finish` gives no value.
-		finish : Cbor.Items -> Try({}, [InvalidCbor(U64), TooLarge(U64)])
+		finish : Cbor.Items -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)])
 		finish = |items| finish_items(items)
 
 		## The position in the stream of the first byte that is not part of an item or a head that `push` gave.
@@ -1011,6 +1060,7 @@ Cbor :: {
 					finish_error: |e|
 						match e {
 							InvalidCbor(p) => InvalidCbor(p)
+							MissingRequiredField(f) => MissingRequiredField(f)
 							TooLarge(p) => TooLarge(p)
 						},
 					spent: Cbor.Items.sequence({}),
@@ -1086,7 +1136,7 @@ Cbor :: {
 
 		## The end of the input: `Ok({})` when the map ended at the last byte, else the error of the cut entry or of
 		## the open map. `finish` gives no entry: `push` gave each one, also the held entry of `Sorted` and `Last`.
-		finish : Cbor.Entries -> Try({}, [InvalidCbor(U64), TooLarge(U64), NotStreamable])
+		finish : Cbor.Entries -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable])
 		finish = |entries| finish_entries(entries)
 
 		## The position in the stream of the first byte that is not part of an entry or a head that `push` gave
@@ -1112,6 +1162,7 @@ Cbor :: {
 					finish_error: |e|
 						match e {
 							InvalidCbor(p) => InvalidCbor(p)
+							MissingRequiredField(f) => MissingRequiredField(f)
 							TooLarge(p) => TooLarge(p)
 							NotStreamable => NotStreamable
 						},
@@ -1153,7 +1204,7 @@ Cbor :: {
 	## no duplicate key, 512 nested arrays, maps and tags or less. Then it must fit the type.
 	## Bytes after the item are an error at the position of the first extra byte.
 	## The same as `parse_with(bytes, {})`.
-	parse : List(U8) -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse : List(U8) -> Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse = |bytes| Cbor.parse_with(bytes, {})
 
 	## Like `parse`, with options (`Cbor.Options`).
@@ -1162,7 +1213,7 @@ Cbor :: {
 	## row : Try({ id : I64, active : Bool }, _)
 	## row = Cbor.parse_with(bytes, { fields: Camel, allow: Cbor.sql_rows })
 	## ```
-	parse_with : List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_with : List(U8), Cbor.Options -> Try(a, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_with = |bytes, options| {
 		setup = parse_setup(options)
 		Shape : a
@@ -1179,11 +1230,11 @@ Cbor :: {
 	## key : Try({ value : Cbor.Value, rest : List(U8) }, _)
 	## key = Cbor.parse_prefix(bytes)
 	## ```
-	parse_prefix : List(U8) -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_prefix : List(U8) -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_prefix = |bytes| Cbor.parse_prefix_with(bytes, {})
 
 	## Like `parse_prefix`, with options (`Cbor.Options`).
-	parse_prefix_with : List(U8), Cbor.Options -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_prefix_with : List(U8), Cbor.Options -> Try({ value : a, rest : List(U8) }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_prefix_with = |bytes, options| {
 		setup = parse_setup(options)
 		Shape : a
@@ -1195,11 +1246,11 @@ Cbor :: {
 	## Reads a CBOR sequence (RFC 8742): zero or more items of the type `a`, one after the other, with no
 	## head before them. Empty bytes give `[]`. Each item has the checks of `parse` (and `max_items` counts the items of each one).
 	## The position of an error is in all of `bytes`.
-	parse_sequence : List(U8) -> Try(List(a), [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_sequence : List(U8) -> Try(List(a), [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_sequence = |bytes| Cbor.parse_sequence_with(bytes, {})
 
 	## Like `parse_sequence`, with options (`Cbor.Options`).
-	parse_sequence_with : List(U8), Cbor.Options -> Try(List(a), [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_sequence_with : List(U8), Cbor.Options -> Try(List(a), [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_sequence_with = |bytes, options| {
 		# The stream decoder with no `max_buffer`: all the bytes are in memory.
 		start = append_items(new_items(options, Sequence, U64.highest), bytes)
@@ -1245,7 +1296,7 @@ Cbor :: {
 	## `Cbor.encode_try` to get the error.
 	encode : a -> List(U8) where [a.Encodable([])]
 	encode = |value|
-		match Cbor.encode_item(value, new_writer(Snake)) {
+		match Cbor.encode_item(value, new_writer(Snake, Bool.False)) {
 			Ok(w) if counts_match(w) => finish_output(w)
 			_ => crash "Cbor.encode: an encoder_for wrote the wrong count of items (CountMismatch). Cbor.encode_try gives the error."
 		}
@@ -1255,7 +1306,7 @@ Cbor :: {
 	## Another error comes from your own `encoder_for`.
 	encode_try : a -> Try(List(U8), [CountMismatch, ..err]) where [a.Encodable([CountMismatch, ..err])]
 	encode_try = |value| {
-		w = Cbor.encode_item(value, new_writer(Snake))?
+		w = Cbor.encode_item(value, new_writer(Snake, Bool.False))?
 		if (counts_match(w)) Ok(finish_output(w)) else Err(CountMismatch)
 	}
 
@@ -1263,17 +1314,8 @@ Cbor :: {
 	## camelCase key (`fields: Camel`), or with `key_order: Sorted`, a map has two entries with the same key bytes.
 	encode_with : a, Cbor.WriteOptions -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err]) where [a.Encodable([CountMismatch, DuplicateMapKey, ..err])]
 	encode_with = |value, options| {
-		w = Cbor.encode_item(value, new_writer(options.?fields ?? Snake))?
-		if !counts_match(w) {
-			return Err(CountMismatch)
-		}
-		if w.st.dup {
-			return Err(DuplicateMapKey)
-		}
-		match options.?key_order ?? Given {
-			Given => Ok(finish_output(w))
-			Sorted => sort_maps(finish_output(w))
-		}
+		w = Cbor.encode_item(value, Cbor.Writer.new(options))?
+		finish_writer(w)
 	}
 
 	## Codec protocol: the record key to write. `Camel` (`encode_with`) gives the camelCase name.
@@ -1287,7 +1329,6 @@ Cbor :: {
 
 	## Codec protocol: the error for a value that does not fit its type. A `parser_for` of your own
 	## uses it for its own errors: `Err(Cbor.invalid_value(encoding, state))` is an error at `state`.
-	## The error type is the error type of the format: each `parser_for` gives it.
 	invalid_value : Cbor, Cbor.Reader -> [InvalidCbor(U64), MissingRequiredField(Str)]
 	invalid_value = |_, state| InvalidCbor(error_pos(state))
 
@@ -1353,12 +1394,12 @@ Cbor :: {
 	encode_tagged : U64, a, Cbor.Writer -> Try(Cbor.Writer, err) where [a.Encodable(err)]
 	encode_tagged = |number, value, w| {
 		{ out, st } = begin(w)
-		slot({ out: put_head(out, 6, number), st }, 0, |inner| Cbor.encode_item(value, inner))
+		tag_slot({ out: put_head(out, 6, number), st }, |inner| Cbor.encode_item(value, inner))
 	}
 
 	## Reads one item of the type `a` at `state`, with the `parser_for` of `a`, and gives the state after it.
 	## Use it in a `parser_for` of your own, for example for the item after a tag.
-	parse_item : Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_item : Cbor, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_item = |encoding, state| {
 		Shape : a
 		parse_shape = Shape.parser_for(encoding)
@@ -1377,14 +1418,15 @@ Cbor :: {
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_str : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
-	parse_str = |cbor, state| text(untag(cbor, state)?)
+	parse_str = |cbor, state|
+		match short_text(cbor, state) {
+			Ok(t) => Ok(t)
+			Err(NotShort) => text(untag(cbor, state)?)
+		}
 
 	## A byte string (major type 2) only. Use it in a `parser_for` of your own.
 	parse_bytes : Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
-	parse_bytes = |cbor, tagged| {
-		b = string_at(untag(cbor, tagged)?, 2)?
-		Ok({ value: b.bytes, rest: b.rest })
-	}
+	parse_bytes = |cbor, tagged| bytes_item(cbor, tagged)
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## Reads `false` and `true`. With `BoolFromInt`, also the integers 0 and 1 (a SQL database has no boolean),
@@ -1392,6 +1434,13 @@ Cbor :: {
 	## Another integer is an error.
 	parse_bool : Cbor, Cbor.Reader -> Try({ value : Bool, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_bool = |cbor, tagged| {
+		if plain_at(cbor, tagged) {
+			match tagged.bytes.get(tagged.pos) {
+				Ok(0xf4) => return Ok({ value: Bool.False, rest: at(tagged, tagged.pos + 1) })
+				Ok(0xf5) => return Ok({ value: Bool.True, rest: at(tagged, tagged.pos + 1) })
+				_ => {}
+			}
+		}
 		state = untag(cbor, tagged)?
 		match if (state.raw > 0) Err(OutOfBounds) else state.bytes.get(state.pos) {
 			Ok(0xf4) => Ok({ value: Bool.False, rest: at(state, state.pos + 1) })
@@ -1453,6 +1502,19 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_u64 : Cbor, Cbor.Reader -> Try({ value : U64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_u64 = |cbor, state| {
+		if plain_at(cbor, state) {
+			# Major type 0 with any head: the walk checked the head and its bytes.
+			match state.bytes.get(state.pos) {
+				Ok(b) if b < 0x18 => return Ok({ value: b.to_u64(), rest: at(state, state.pos + 1) })
+				Ok(b) if b <= 0x1b => {
+					size = (1.U64).shl_wrap((b - 0x18).to_u8_wrap())
+					if size < state.bytes.len() - state.pos {
+						return Ok({ value: get_be(state.bytes, state.pos + 1, size), rest: at(state, state.pos + 1 + size) })
+					}
+				}
+				_ => {}
+			}
+		}
 		n = int(cbor, state)?
 		Ok({ value: n.value.to_u64_try() ? |_| InvalidCbor(state.pos), rest: n.rest })
 	}
@@ -1507,6 +1569,23 @@ Cbor :: {
 	## Reads a float, or an integer that is exact as an F64 (any integer of size 2^53 or less).
 	parse_f64 : Cbor, Cbor.Reader -> Try({ value : F64, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f64 = |cbor, state| {
+		if cbor.read.encoder_forms {
+			item = at_content(cbor, state)?
+			f = float(item)?
+			return if (float_form_matches(item, f.value)) Ok({ value: f.value, rest: f.rest }) else Err(InvalidCbor(item.pos))
+		}
+		if plain_at(cbor, state) {
+			# A float head at a plain position: its bits after the initial byte (the walk checked the bytes).
+			b = state.bytes.get(state.pos) ?? 0
+			if b >= 0xf9 and b <= 0xfb {
+				size = (1.U64).shl_wrap((b - 0xf8).to_u8_wrap())
+				if size < state.bytes.len() - state.pos {
+					bits = get_be(state.bytes, state.pos + 1, size)
+					value = if (b == 0xfb) F64.from_bits(bits) else if (b == 0xfa) F32.from_bits(bits.to_u32_wrap()).to_f64() else half(bits)
+					return Ok({ value, rest: at(state, state.pos + 1 + size) })
+				}
+			}
+		}
 		f = float(untag(cbor, state)?)?
 		Ok({ value: f.value, rest: f.rest })
 	}
@@ -1516,7 +1595,7 @@ Cbor :: {
 	## A finite value outside the F32 range, and a value that is not 0 but rounds to 0, are errors.
 	parse_f32 : Cbor, Cbor.Reader -> Try({ value : F32, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_f32 = |cbor, tagged| {
-		state = untag(cbor, tagged)?
+		state = if (cbor.read.encoder_forms) at_content(cbor, tagged)? else untag(cbor, tagged)?
 		f = float(state)?
 		small = f.value.to_f32_wrap()
 		lost =
@@ -1525,7 +1604,13 @@ Cbor :: {
 			} else {
 				Bool.False
 			}
-		if (lost) Err(InvalidCbor(state.pos)) else Ok({ value: small, rest: f.rest })
+		if lost {
+			Err(InvalidCbor(state.pos))
+		} else if cbor.read.encoder_forms and !float_form_matches(state, small.to_f64()) {
+			Err(InvalidCbor(state.pos))
+		} else {
+			Ok({ value: small, rest: f.rest })
+		}
 	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
@@ -1538,31 +1623,9 @@ Cbor :: {
 	## then text in the number form of JSON (`-1.25`, `4E+1`) reads exactly (see `Cbor.Options`).
 	parse_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_dec = |cbor, tagged| {
-		state = untag(cbor, tagged)?
-		h = head(state)?
-		match h.major {
-			0 => Ok({ value: Dec.from_attos(h.arg.to_i128() * dec_scale), rest: at(state, h.next) })
-			1 => Ok({ value: Dec.from_attos((-1 - h.arg.to_i128()) * dec_scale), rest: at(state, h.next) })
-			3 if cbor.read.dec_from_text => {
-				t = text(state)?
-				d = dec_text(t.value) ? |_| InvalidCbor(state.pos)
-				Ok({ value: d, rest: t.rest })
-			}
-			6 => decimal_fraction(state, cbor.read.padded)
-			_ => {
-				f = float(state)?
-				# The whole part and the fraction apart: the product of the f64 with 10^18 loses digits.
-				whole = f.value.to_i128_try() ? |_| InvalidCbor(state.pos)
-				if whole.abs_diff(0) > 170141183460469231731 {
-					return Err(InvalidCbor(state.pos))
-				}
-				frac = f.value - whole.to_f64()
-				scaled = frac * 1.0e18
-				frac_attos = (scaled + if (scaled < 0.0) -0.5 else 0.5).to_i128_try() ? |_| InvalidCbor(state.pos)
-				attos = (whole * dec_scale).plus_try(frac_attos) ? |_| InvalidCbor(state.pos)
-				Ok({ value: Dec.from_attos(attos), rest: f.rest })
-			}
-		}
+		parsed = read_dec(cbor, tagged)?
+		item = at_content(cbor, tagged)?
+		if (cbor.read.encoder_forms and !dec_form_matches(item, parsed.value.to_attos(), parsed.rest.pos)) Err(InvalidCbor(item.pos)) else Ok(parsed)
 	}
 
 	# Containers
@@ -1570,6 +1633,16 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	parse_list_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
 	parse_list_start = |cbor, tagged| {
+		if plain_at(cbor, tagged) {
+			# An array of 23 items or less at a plain position: a 1-byte head.
+			b = tagged.bytes.get(tagged.pos) ?? 0
+			if b >= 0x80 and b <= 0x97 {
+				len = (b - 0x80).to_u64()
+				if len <= tagged.bytes.len() - tagged.pos - 1 {
+					return Ok(Counted({ len, rest: { ..at(tagged, tagged.pos + 1), array: tagged.pos } }))
+				}
+			}
+		}
 		state = untag(cbor, tagged)?
 		h = head(state)?
 		if indefinite_at(h, state.pos) {
@@ -1589,7 +1662,7 @@ Cbor :: {
 		match h.major {
 			# The array position: a `List(U8)` reads the first item only with `BytesFromArray`.
 			4 => Ok(Counted({ len: h.arg, rest: { ..at(state, h.next), array: state.pos } }))
-			2 => Ok(Counted({ len: h.arg, rest: moved(state, h.next, h.arg) }))
+			2 if !cbor.read.encoder_forms or h.arg != 0 => Ok(Counted({ len: h.arg, rest: moved(state, h.next, h.arg) }))
 			3 if cbor.read.bytes_from_base64 => base64_list(state)
 			_ => Err(InvalidCbor(state.pos))
 		}
@@ -1653,7 +1726,19 @@ Cbor :: {
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## A record that is the one payload of an internal tag reads the map of the tag itself.
 	parse_record_start : Cbor, Cbor.Reader -> Try([Counted({ len : U64, rest : Cbor.Reader }), Uncounted(Cbor.Reader)], [InvalidCbor(U64), MissingRequiredField(Str)])
-	parse_record_start = |cbor, tagged| map_start(skip_tags(cbor, tagged))
+	parse_record_start = |cbor, tagged| {
+		if tagged.raw == 0 and cbor.ignore_tags.is_empty() {
+			# A map of 23 entries or less: a 1-byte head. Each entry is 2 bytes or more.
+			b = tagged.bytes.get(tagged.pos) ?? 0
+			if b >= 0xa0 and b <= 0xb7 {
+				len = (b - 0xa0).to_u64()
+				if len <= (tagged.bytes.len() - tagged.pos - 1) // 2 {
+					return Ok(Counted({ len, rest: at(tagged, tagged.pos + 1) }))
+				}
+			}
+		}
+		map_start(skip_tags(cbor, tagged))
+	}
 
 	## Codec protocol: the derived `parser_for` of a type calls it. An app calls `Cbor.parse`.
 	## With `Snake` and `unknown_fields: Skip`, gives the key, and the derived parser matches it (the fast path).
@@ -1673,6 +1758,13 @@ Cbor :: {
 		[InvalidCbor(U64), MissingRequiredField(Str)],
 	)
 	parse_record_field = |cbor, fields, state| {
+		if !cbor.read.camel and !cbor.read.reject_unknown and !cbor.read.null_as_absent and !skipped(state) {
+			# The common case: a short text key, no key to skip. The derived parser matches the name.
+			match short_text(cbor, state) {
+				Ok({ value, rest }) => return Ok(TryField({ name: value, rest }))
+				Err(NotShort) => {}
+			}
+		}
 		if at_break(state) {
 			# The end of a map of indefinite length.
 			return Ok(Done(at(state, state.pos + 1)))
@@ -1943,7 +2035,7 @@ Cbor :: {
 	## ```
 	##
 	## When `a` is not a tag union, the options have no effect.
-	parse_union : Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..errs]) where [a.Parseable([InvalidCbor(U64), ..errs])]
+	parse_union : Cbor, Cbor.UnionOptions, Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)]) where [a.Parseable([InvalidCbor(U64), MissingRequiredField(Str)])]
 	parse_union = |encoding, options, tagged| {
 		state = untag(encoding, tagged)?
 		next = { at: state.pos, unions: options.?unions ?? encoding.unions, tags: options.?tags ?? Exact }
@@ -1989,11 +2081,11 @@ Cbor :: {
 	encode_u8 = |value, w| {
 		{ out, st } = w
 		match st.list {
-			Pending(count) if st.left > 0 => {
+			Pending(count) if st.owe => {
 				start = out.len()
-				Ok({ out: put_head(out, 2, count).append(value), st: { ..st, left: st.left - 1, list: Bytes({ start, count }) } })
+				Ok({ out: put_head(out, 2, count).append(value), st: { ..st, owe: Bool.False, list: Bytes({ start, count }) } })
 			}
-			Bytes(_) if st.left > 0 => Ok({ out: out.append(value), st: { ..st, left: st.left - 1 } })
+			Bytes(_) if st.owe => Ok({ out: out.append(value), st: { ..st, owe: Bool.False } })
 			_ => {
 				{ out: o, st: s } = begin({ out, st })
 				Ok({ out: put_head(o, 0, value.to_u64()), st: s })
@@ -2104,10 +2196,17 @@ Cbor :: {
 		{ out, st } = w
 		# Only camelCase keys can collide: the Roc names of one record are all different.
 		dup = st.fields == Camel and count > 1 and camel_collision(write_fields)
-		{ w: done, start, unused } = nest({ out, st }, Head(5, count), Plain, Partial, |c| write_fields(c, add_field))?
-		# Absent fields: a shorter head for the real count, and a gap for the rest of the old head.
-		{ out: o, st: d } = shorten_head(done, start, count, count - unused)
-		Ok({ out: o, st: { ..d, dup: d.dup or dup } })
+		# TODO(roc#13035): a match with no early return, not `?` (see `nest`).
+		match nest({ out, st }, Head(5, count), Plain, Partial, write_fields, add_field) {
+			Ok({ w: done, start, unused }) => {
+				# Absent fields: a shorter head for the real count, and a gap for the rest of the old head.
+				# With each field there, `done` as it is. A conditional: an early `return Ok(done)` made the encode 1.6x
+				# slower (nightly-2026-11-13-03dce41).
+				{ out: o, st: d } = if (unused == 0) done else shorten_head(done, start, count, count - unused)
+				Ok({ out: o, st: { ..d, dup: d.dup or dup } })
+			}
+			Err(e) => Err(e)
+		}
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
@@ -2115,8 +2214,7 @@ Cbor :: {
 	## is exactly one item. A key of any type writes as that type writes: an integer key is an integer, not text.
 	encode_dict : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)), (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_dict = |w, count, write_entries| {
-		{ w: done, .. } = nest(w, Head(5, count), Plain, Full, |c| write_entries(c, add_entry))?
-		Ok(done)
+		nest(w, Head(5, count), Plain, Full, write_entries, add_entry).map_ok(|n| n.w)
 	}
 
 	## Codec protocol: a key of a `Dict(Str, v)`, and of a tag union with no payloads: text.
@@ -2184,15 +2282,51 @@ Cbor :: {
 	## A list of `U8` (the first item comes from `encode_u8`) is a byte string. An empty list is an empty array.
 	encode_list : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_list = |w, count, write_items| {
-		{ w: done, .. } = nest(w, NoHead(count), Pending(count), Full, |c| write_items(c, add_item))?
-		Ok(done)
+		nest(w, NoHead(count), Pending(count), Full, write_items, add_item).map_ok(|n| n.w)
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
 	encode_tuple : Cbor.Writer, U64, (Cbor.Container, (Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Writer, err)
 	encode_tuple = |w, count, write_items| {
-		{ w: done, .. } = nest(w, Head(4, count), Plain, Full, |c| write_items(c, add_item))?
-		Ok(done)
+		nest(w, Head(4, count), Plain, Full, write_items, add_item).map_ok(|n| n.w)
+	}
+
+	## `encode_list` for a format outside the package: the item callbacks carry `state`, a value of the caller, with the writer.
+	encode_list_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_list_carry = |e, count, write_items| nest_carry(e, NoHead(count), Pending(count), Full, write_items, add_item_carry).map_ok(|n| n.e)
+
+	## `encode_tuple` with a value of the caller.
+	encode_tuple_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_tuple_carry = |e, count, write_items| nest_carry(e, Head(4, count), Plain, Full, write_items, add_item_carry).map_ok(|n| n.e)
+
+	## `encode_tag` with a value of the caller.
+	encode_tag_carry : Cbor.WriterWith(s), Str, U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_tag_carry = |e, name, count, write_payloads|
+		if count == 0 {
+			{ writer, state } = e
+			{ out, st } = begin(writer)
+			Ok({ writer: { out: put_text(out, name), st }, state })
+		} else {
+			nest_carry(e, Keyed(name, count), Plain, Full, write_payloads, add_item_carry).map_ok(|n| n.e)
+		}
+
+	## `encode_dict` with a value of the caller.
+	encode_dict_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)), (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_dict_carry = |e, count, write_entries| nest_carry(e, Head(5, count), Plain, Full, write_entries, add_entry_carry).map_ok(|n| n.e)
+
+	## `encode_record` with a value of the caller.
+	encode_record_carry : Cbor.WriterWith(s), U64, (Cbor.ContainerWith(s), (Cbor.ContainerWith(s), Str, (Cbor.WriterWith(s) -> Try(Cbor.WriterWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.ContainerWith(s), err)) -> Try(Cbor.WriterWith(s), err)
+	encode_record_carry = |e, count, write_fields| {
+		{ writer, state } = e
+		{ out, st } = writer
+		dup = st.fields == Camel and count > 1 and camel_collision_carry(write_fields, state)
+		match nest_carry({ writer: { out, st }, state }, Head(5, count), Plain, Partial, write_fields, add_field_carry) {
+			Ok({ e: { writer: done, state: after }, start, unused }) => {
+				{ out: o, st: d } = if (unused == 0) done else shorten_head(done, start, count, count - unused)
+				Ok({ writer: { out: o, st: { ..d, dup: d.dup or dup } }, state: after })
+			}
+			Err(x) => Err(x)
+		}
 	}
 
 	## Codec protocol: the derived `encoder_for` of a type calls it. An app calls `Cbor.encode`.
@@ -2203,26 +2337,25 @@ Cbor :: {
 			{ out, st } = begin(w)
 			Ok({ out: put_text(out, name), st })
 		} else {
-			{ w: done, .. } = nest(w, Keyed(name, count), Plain, Full, |c| write_payloads(c, add_item))?
-			Ok(done)
+			nest(w, Keyed(name, count), Plain, Full, write_payloads, add_item).map_ok(|n| n.w)
 		}
 }
 
-## Starts one item: it takes one place of the current level, and writes a pending list head.
-## No place left is a count mismatch.
+## Starts one item: it takes the open place (`owe`), and writes a pending list head.
+## No open place is a count mismatch: a second item in one place, or an item outside of a place.
 ## Each writer function takes the output out of the writer before it appends, and uses no
 ## closure for an append. Then the output has one reference at each append, and is not copied.
 begin : Cbor.Writer -> Cbor.Writer
 begin = |w| {
 	{ out, st } = w
-	if st.left == 0 {
-		return { out, st: { ..st, bad: Bool.True } }
-	}
-	left = st.left - 1
-	match st.list {
-		Plain => { out, st: { ..st, left } }
-		Pending(count) => { out: put_head(out, 4, count), st: { ..st, left, list: Plain } }
-		Bytes({ start, count }) => { out: rewrite_as_array(out, start, count), st: { ..st, left, list: Plain } }
+	if !st.owe {
+		{ out, st: { ..st, bad: Bool.True } }
+	} else {
+		match st.list {
+			Plain => { out, st: { ..st, owe: Bool.False } }
+			Pending(count) => { out: put_head(out, 4, count), st: { ..st, owe: Bool.False, list: Plain } }
+			Bytes({ start, count }) => { out: rewrite_as_array(out, start, count), st: { ..st, owe: Bool.False, list: Plain } }
+		}
 	}
 }
 
@@ -2248,12 +2381,14 @@ put_heads = |out, heads|
 		Keyed(name, count) => put_head(put_text(put_head(out, 5, 1), name), 4, count)
 	}
 
-## Starts one item and writes its heads, then runs `write` on a new level with `count` places and a new id.
-## The container that `write` gives back must be of that level. `Full`: each place must have its item.
+## Starts one item and writes its heads, then runs `write(container, add)` on a new level with `count` places and a
+## new id. The container that `write` gives back must be of that level. `Full`: each place must have its item.
 ## `Partial` (a record): places can stay empty. Then back to the current level.
 ## Gives the position of the head and the count of empty places.
-nest : Cbor.Writer, [NoHead(U64), Head(U8, U64), Keyed(Str, U64)], [Plain, Pending(U64), Bytes({ start : U64, count : U64 })], [Full, Partial], (Cbor.Container -> Try(Cbor.Container, err)) -> Try({ w : Cbor.Writer, start : U64, unused : U64 }, err)
-nest = |w, heads, list, need, write| {
+## `write` and `add` come as two arguments, not as one closure `|c| write(c, add)`: a closure that holds the `write`
+## of the derived encoder for each container cost 40% of a record encode (nightly-2026-11-13-03dce41).
+nest : Cbor.Writer, [NoHead(U64), Head(U8, U64), Keyed(Str, U64)], [Plain, Pending(U64), Bytes({ start : U64, count : U64 })], [Full, Partial], (Cbor.Container, add -> Try(Cbor.Container, err)), add -> Try({ w : Cbor.Writer, start : U64, unused : U64 }, err)
+nest = |w, heads, list, need, write, add| {
 	{ out, st } = begin(w)
 	count =
 		match heads {
@@ -2263,64 +2398,162 @@ nest = |w, heads, list, need, write| {
 	id = st.next
 	left = st.left
 	level = st.level
-	Cbor.Container.(inner) = write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, list, level: id, next: id + 1 } }))?
-	{ out: o, st: d } = inner
+	# TODO(roc#13035): the early return of `?` (or of `return Err(e)`) makes the encode up to 2x slower (inlining is
+	# lost). A match that gives `Err(e)` with no return does not. When the issue is fixed, go back to `?` here and in
+	# the other writer functions with this TODO.
+	match write(Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), add) {
+		Ok(Cbor.Container.(inner)) => {
+			unused = inner.st.left
+			Ok({ w: leave(inner, count, id, left, level, need), start, unused })
+		}
+		Err(e) => Err(e)
+	}
+}
+
+nest_carry : { writer : Cbor.Writer, state : s }, [NoHead(U64), Head(U8, U64), Keyed(Str, U64)], [Plain, Pending(U64), Bytes({ start : U64, count : U64 })], [Full, Partial], ({ container : Cbor.Container, state : s }, add -> Try({ container : Cbor.Container, state : s }, err)), add -> Try({ e : { writer : Cbor.Writer, state : s }, start : U64, unused : U64 }, err)
+nest_carry = |e, heads, list, need, write, add| {
+	{ writer, state } = e
+	{ out, st } = begin(writer)
+	count =
+		match heads {
+			NoHead(n) | Head(_, n) | Keyed(_, n) => n
+		}
+	start = out.len()
+	id = st.next
+	left = st.left
+	level = st.level
+	# TODO(roc#13035): a match with no early return (see `nest`).
+	match write({ container: Cbor.Container.({ out: put_heads(out, heads), st: { ..st, left: count, owe: Bool.False, list, level: id, next: id + 1 } }), state }, add) {
+		Ok({ container: Cbor.Container.(inner), state: after }) => {
+			unused = inner.st.left
+			Ok({ e: { writer: leave(inner, count, id, left, level, need), state: after }, start, unused })
+		}
+		Err(x) => Err(x)
+	}
+}
+
+## `add_item` with a value of the caller.
+add_item_carry : { container : Cbor.Container, state : s }, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)
+add_item_carry = |c, write_value| {
+	{ container: Cbor.Container.(w), state } = c
+	slot_carry(w, state, 1, write_value).map_ok(|x| { container: Cbor.Container.(x.writer), state: x.state })
+}
+
+## `add_entry` with a value of the caller.
+add_entry_carry : { container : Cbor.Container, state : s }, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)), ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)
+add_entry_carry = |c, write_key, write_value| {
+	{ container: Cbor.Container.(w), state } = c
+	match slot_carry(w, state, 1, write_key) {
+		Ok({ writer: keyed, state: after }) => slot_carry(keyed, after, 0, write_value).map_ok(|x| { container: Cbor.Container.(x.writer), state: x.state })
+		Err(x) => Err(x)
+	}
+}
+
+## `add_field` with a value of the caller.
+add_field_carry : { container : Cbor.Container, state : s }, Str, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)
+add_field_carry = |c, name, write_value| {
+	{ container: Cbor.Container.(w), state } = c
+	{ out, st } = w
+	slot_carry({ out: put_text(out, name), st }, state, 1, write_value).map_ok(|x| { container: Cbor.Container.(x.writer), state: x.state })
+}
+
+## `slot` with a value of the caller: the same checks.
+slot_carry : Cbor.Writer, s, U64, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ writer : Cbor.Writer, state : s }, err)
+slot_carry = |w, state, used, write_value| {
+	{ out, st } = w
+	bad = st.bad or st.owe or st.left < used
+	left = if (st.left < used) 0 else st.left - used
+	run_carry({ writer: { out, st: { ..st, left, owe: Bool.True, bad } }, state }, write_value)
+}
+
+## Only the call of `write_value`: see `slot`.
+run_carry : { writer : Cbor.Writer, state : s }, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ writer : Cbor.Writer, state : s }, err)
+run_carry = |inner, write_value| write_value(inner)
+
+## `camel_collision` with a value of the caller: the dry run gets `state`, and gives it back with no change.
+camel_collision_carry : ({ container : Cbor.Container, state : s }, ({ container : Cbor.Container, state : s }, Str, ({ writer : Cbor.Writer, state : s } -> Try({ writer : Cbor.Writer, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)) -> Try({ container : Cbor.Container, state : s }, err)), s -> Bool
+camel_collision_carry = |write_fields, state| {
+	empty = { out: [], st: { left: 0, owe: Bool.False, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel, sorted: Bool.False } }
+	keys = write_fields({ container: Cbor.Container.(empty), state }, |{ container: Cbor.Container.({ out, st }), state: s }, name, _| Ok({ container: Cbor.Container.({ out: put_text(out, name), st }), state: s }))
+	match keys {
+		Ok({ container: Cbor.Container.({ out, .. }), .. }) => text_duplicate(out)
+		Err(_) => Bool.False
+	}
+}
+
+## The end of a level: back to the level around it, with the checks. `nest` and `nest_carry` call it.
+leave : Cbor.Writer, U64, U64, U64, U64, [Full, Partial] -> Cbor.Writer
+leave = |w, count, id, left, level, need| {
+	{ out: o, st: d } = w
 	# A list with no item: its head is still to write.
 	pending = d.list == Pending(count)
 	done = if (pending) put_head(o, 4, count) else o
-	ok = d.level == id and (need == Partial or d.left == 0)
-	Ok({ w: { out: done, st: { ..d, left, level, list: Plain, bad: d.bad or !ok } }, start, unused: d.left })
+	# The writer of this level, the last place with its item, and with `Full` each place opened.
+	ok = d.level == id and !d.owe and (need == Partial or d.left == 0)
+	{ out: done, st: { ..d, left, level, owe: Bool.False, list: Plain, bad: d.bad or !ok } }
 }
 
 ## One value of a list, a tuple or a tag: exactly one item.
 add_item : Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)
-add_item = |Cbor.Container.(w), write_value| Ok(Cbor.Container.(slot(w, 1, write_value)?))
+add_item = |Cbor.Container.(w), write_value| slot(w, 1, write_value).map_ok(|x| Cbor.Container.(x))
 
 ## One entry of a map: exactly one item for the key, then exactly one item for the value. The entry takes one place.
 add_entry : Cbor.Container, (Cbor.Writer -> Try(Cbor.Writer, err)), (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)
 add_entry = |Cbor.Container.(w), write_key, write_value| {
-	keyed = slot(w, 1, write_key)?
-	Ok(Cbor.Container.(slot(keyed, 0, write_value)?))
+	# TODO(roc#13035): no `?` (see `nest`).
+	match slot(w, 1, write_key) {
+		Ok(keyed) => slot(keyed, 0, write_value).map_ok(|x| Cbor.Container.(x))
+		Err(e) => Err(e)
+	}
 }
 
 ## One field of a record: the key, then exactly one item.
 add_field : Cbor.Container, Str, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)
 add_field = |Cbor.Container.(w), name, write_value| {
 	{ out, st } = w
-	Ok(Cbor.Container.(slot({ out: put_text(out, name), st }, 1, write_value)?))
+	slot({ out: put_text(out, name), st }, 1, write_value).map_ok(|x| Cbor.Container.(x))
 }
 
-## Runs `write_value` on a new level with one place and a new id. It must give back a writer of that
-## level, with exactly one item. The place comes from the current level (`used` 1), or `begin` took it (`used` 0).
+## Opens one place of the current level for `write_value`, which must write exactly one item there. The place comes
+## from the current level (`used` 1), or the key of a map entry took it (`used` 0: the value of the entry). A tag uses `tag_slot`.
+## The checks come when the next place opens and when the level ends (`nest`): the place before has its item (`owe`
+## is false), and the level has a place left. A second item in a place finds no open place (`begin`). So the call of
+## `write_value` is the last step, and its writer is not read here: no copy of the writer after each item.
 slot : Cbor.Writer, U64, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Writer, err)
 slot = |w, used, write_value| {
 	{ out, st } = w
-	if st.left < used {
-		return Ok({ out, st: { ..st, bad: Bool.True } })
-	}
-	id = st.next
-	left = st.left - used
-	level = st.level
+	bad = st.bad or st.owe or st.left < used
+	left = if (st.left < used) 0 else st.left - used
 	# The wasm32 dev backend copies the code around a closure call into each item encoder of the app, each copy with
 	# its own stack. So the argument is a name, and the call is alone in `run_slot` (README, "Known compiler issues").
-	inner = { out, st: { ..st, left: 1, level: id, next: id + 1 } }
-	close_slot(run_slot(inner, write_value), id, left, level)
+	run_slot({ out, st: { ..st, left, owe: Bool.True, bad } }, write_value)
+}
+
+## The one item after a tag head, on a level of its own with a new id: the item must be written with the writer
+## after the head. A value can hold a writer (an `encoder_for` of your own), also the writer of the place before the
+## tag, which has the level of the place: the new id tells the two apart, so the writer of the item is checked here.
+tag_slot : Cbor.Writer, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Writer, err)
+tag_slot = |w, write_value| {
+	{ out, st } = w
+	id = st.next
+	left = st.left
+	level = st.level
+	# TODO(roc#13035): no `?` (see `nest`).
+	match run_slot({ out, st: { ..st, owe: Bool.True, level: id, next: id + 1 } }, write_value) {
+		Ok({ out: o, st: d }) => {
+			ok = d.level == id and !d.owe
+			Ok({ out: o, st: { ..d, left, level, owe: Bool.False, bad: d.bad or !ok } })
+		}
+		Err(e) => Err(e)
+	}
 }
 
 ## Only the call of `write_value`: see `slot`.
 run_slot : Cbor.Writer, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Writer, err)
 run_slot = |inner, write_value| write_value(inner)
 
-## The end of `slot`: back to the current level. The list flag stays: the next U8 of a byte string list appends one byte.
-close_slot : Try(Cbor.Writer, err), U64, U64, U64 -> Try(Cbor.Writer, err)
-close_slot = |done, id, left, level| {
-	{ out: o, st: d } = done?
-	ok = d.level == id and d.left == 0
-	Ok({ out: o, st: { ..d, left, level, bad: d.bad or !ok } })
-}
-
 ## A record with absent fields (`n` is less than `count`): the head at `start` for `n` in place of `count`. The shortest head for `n`
-## is not longer. The bytes that it frees are a gap, which `finish` removes once for the whole output.
+## is not longer. The bytes that it frees are a gap, which `finish_output` removes once for the whole output.
 shorten_head : Cbor.Writer, U64, U64, U64 -> Cbor.Writer
 shorten_head = |w, start, count, n| {
 	{ out, st } = w
@@ -2340,31 +2573,38 @@ shorten_head = |w, start, count, n| {
 ## Each NaN is `f9 7e00`. Only bit operations, so each value is exact.
 put_float : List(U8), U64 -> List(U8)
 put_float = |out, bits| {
+	form = preferred_float(bits)
+	put_be(out.append(form.head), form.bits, form.size)
+}
+
+## One classifier for writing and checking a typed float, including signed zero and canonical NaN.
+preferred_float : U64 -> { head : U8, bits : U64, size : U64 }
+preferred_float = |bits| {
 	sign = bits.shr_zf_wrap(63)
 	exp = bits.shr_zf_wrap(52).bitwise_and(0x7ff)
 	mant = bits.bitwise_and(0xfffffffffffff)
 	if exp == 0x7ff {
-		return put_be(out.append(0xf9), if (mant != 0) 0x7e00 else sign.shl_wrap(15).bitwise_or(0x7c00), 2)
+		return { head: 0xf9, bits: if (mant != 0) 0x7e00 else sign.shl_wrap(15).bitwise_or(0x7c00), size: 2 }
 	}
 	if exp == 0 {
 		# A zero is f16. A subnormal f64 is smaller than each f32.
-		return if (mant == 0) put_be(out.append(0xf9), sign.shl_wrap(15), 2) else put_be(out.append(0xfb), bits, 8)
+		return if (mant == 0) { head: 0xf9, bits: sign.shl_wrap(15), size: 2 } else { head: 0xfb, bits, size: 8 }
 	}
 	e = exp.to_i64_wrap() - 1023
 	# The significand with its leading 1: the value is sig * 2^(e - 52).
 	sig = mant.bitwise_or(0x10000000000000)
 	if e >= -14 and e <= 15 and mant.bitwise_and(0x3ffffffffff) == 0 {
-		put_be(out.append(0xf9), sign.shl_wrap(15).bitwise_or((e + 15).to_u64_wrap().shl_wrap(10)).bitwise_or(mant.shr_zf_wrap(42)), 2)
+		{ head: 0xf9, bits: sign.shl_wrap(15).bitwise_or((e + 15).to_u64_wrap().shl_wrap(10)).bitwise_or(mant.shr_zf_wrap(42)), size: 2 }
 	} else if e >= -24 and e < -14 and low_zero(sig, (28 - e).to_u8_wrap()) {
 		# An f16 subnormal: k * 2^-24, k = sig * 2^(e - 28).
-		put_be(out.append(0xf9), sign.shl_wrap(15).bitwise_or(sig.shr_zf_wrap((28 - e).to_u8_wrap())), 2)
+		{ head: 0xf9, bits: sign.shl_wrap(15).bitwise_or(sig.shr_zf_wrap((28 - e).to_u8_wrap())), size: 2 }
 	} else if e >= -126 and e <= 127 and mant.bitwise_and(0x1fffffff) == 0 {
-		put_be(out.append(0xfa), sign.shl_wrap(31).bitwise_or((e + 127).to_u64_wrap().shl_wrap(23)).bitwise_or(mant.shr_zf_wrap(29)), 4)
+		{ head: 0xfa, bits: sign.shl_wrap(31).bitwise_or((e + 127).to_u64_wrap().shl_wrap(23)).bitwise_or(mant.shr_zf_wrap(29)), size: 4 }
 	} else if e >= -149 and e < -126 and low_zero(sig, (-97 - e).to_u8_wrap()) {
 		# An f32 subnormal: k * 2^-149, k = sig * 2^(e + 97).
-		put_be(out.append(0xfa), sign.shl_wrap(31).bitwise_or(sig.shr_zf_wrap((-97 - e).to_u8_wrap())), 4)
+		{ head: 0xfa, bits: sign.shl_wrap(31).bitwise_or(sig.shr_zf_wrap((-97 - e).to_u8_wrap())), size: 4 }
 	} else {
-		put_be(out.append(0xfb), bits, 8)
+		{ head: 0xfb, bits: bits, size: 8 }
 	}
 }
 
@@ -2376,7 +2616,7 @@ low_zero = |x, n| x.bitwise_and((1.U64).shl_wrap(n) - 1) == 0
 ## no value is written, so it costs O(fields) for each record, with a sort.
 camel_collision : (Cbor.Container, (Cbor.Container, Str, (Cbor.Writer -> Try(Cbor.Writer, err)) -> Try(Cbor.Container, err)) -> Try(Cbor.Container, err)) -> Bool
 camel_collision = |write_fields| {
-	empty = { out: [], st: { left: 0, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel } }
+	empty = { out: [], st: { left: 0, owe: Bool.False, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields: Camel, sorted: Bool.False } }
 	keys = write_fields(Cbor.Container.(empty), |Cbor.Container.({ out, st }), name, _| Ok(Cbor.Container.({ out: put_text(out, name), st })))
 	match keys {
 		Ok(Cbor.Container.({ out, .. })) => text_duplicate(out)
@@ -2410,12 +2650,42 @@ head_size : U64 -> U64
 head_size = |n| if (n < 24) 1 else if (n < 0x100) 2 else if (n < 0x10000) 3 else if (n < 0x100000000) 5 else 9
 
 ## A writer for one item at the root.
-new_writer : [Snake, Camel] -> Cbor.Writer
-new_writer = |fields| { out: List.with_capacity(256), st: { left: 1, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields } }
+new_writer : [Snake, Camel], Bool -> Cbor.Writer
+new_writer = |fields, sorted| { out: List.with_capacity(256), st: { left: 0, owe: Bool.True, list: Plain, level: 0, next: 1, bad: Bool.False, dup: Bool.False, gaps: [], fields, sorted } }
+
+## The bytes of a writer, with the checks of `encode_with`.
+finish_writer : Cbor.Writer -> Try(List(U8), [CountMismatch, DuplicateMapKey, ..err])
+finish_writer = |w| {
+	if !counts_match(w) {
+		return Err(CountMismatch)
+	}
+	if w.st.dup {
+		return Err(DuplicateMapKey)
+	}
+	sorted = w.st.sorted
+	out = finish_output(w)
+	if (sorted) sort_maps(out).map_err(|DuplicateMapKey| DuplicateMapKey) else Ok(out)
+}
+
+## The same validation and output as finish_writer, with depth from the structure walk used for sorting.
+finish_writer_report : Cbor.Writer -> Try({ bytes : List(U8), max_depth : U64 }, [CountMismatch, DuplicateMapKey, ..err])
+finish_writer_report = |w| {
+	if !counts_match(w) {
+		return Err(CountMismatch)
+	}
+	if w.st.dup {
+		return Err(DuplicateMapKey)
+	}
+	sorted = w.st.sorted
+	out = finish_output(w)
+	{ maps, max_depth } = out_maps(out, sorted, Bool.True)
+	bytes = if (sorted) sort_known_maps(out, maps).map_err(|DuplicateMapKey| DuplicateMapKey) else Ok(out)
+	bytes.map_ok(|b| { bytes: b, max_depth })
+}
 
 ## The writer is the root writer, it wrote exactly one item, and each level got its count.
 counts_match : Cbor.Writer -> Bool
-counts_match = |w| !w.st.bad and w.st.left == 0 and w.st.level == 0
+counts_match = |w| !w.st.bad and !w.st.owe and w.st.level == 0
 
 ## The output with the gaps of old record heads removed: one pass, in place.
 ##
@@ -2572,7 +2842,7 @@ update_top = |s, f|
 		Err(_) => s
 	}
 
-# Deterministic encoding (`key_order: Sorted`): a second pass over the output of `finish`.
+# Deterministic encoding (`key_order: Sorted`): a second pass over the output of `finish_output`.
 # 1. `out_maps` walks the heads of the output once and gives each map of 2 entries or more, with the start of each key and value.
 # 2. `sort_maps` sorts the entries of each map by their key bytes, the inner maps first. A key with a map in it is compared
 #    in its sorted form.
@@ -2603,8 +2873,10 @@ out_head = |out, pos| {
 
 ## Each map of the output with 2 entries or more, in the order of their ends: an inner map comes before the map it is in.
 ## One walk of the heads, a loop with a list of the open containers.
-out_maps : List(U8) -> List(OutMap)
-out_maps = |out| {
+out_maps : List(U8), Bool, Bool -> { maps : List(OutMap), max_depth : U64 }
+out_maps = |out, collect_maps, report_depth| {
+	var $depth = 0.U64
+	var $max_depth = 0.U64
 	var $maps = []
 	# The start of each item of each open map, the innermost map last.
 	var $starts = []
@@ -2620,12 +2892,16 @@ out_maps = |out| {
 			$last = Ok(top)
 			$ended = Bool.True
 		} else {
-			if top.map {
+			if collect_maps and top.map {
 				$starts = $starts.append($p)
 			}
 			h = out_head(out, $p)
 			indefinite = h.info == 31
 			if h.major == 4 or h.major == 5 or h.major == 6 or ((h.major == 2 or h.major == 3) and indefinite) {
+				if report_depth and h.major >= 4 and h.major <= 6 {
+					$depth = $depth + 1
+					$max_depth = if ($depth > $max_depth) $depth else $max_depth
+				}
 				count = if (h.major == 5) 2 * h.arg else if (h.major == 6) 1 else h.arg
 				$open = $open.append({ left: count, indefinite, map: h.major == 5, mark: $starts.len(), head: $p, at: h.next })
 				$p = h.next
@@ -2637,7 +2913,10 @@ out_maps = |out| {
 		# A break is not in the entries of its map.
 		match $last {
 			Ok(f) => {
-				if f.map and $starts.len() >= f.mark + 4 {
+				if report_depth and out_level(out, f.head) {
+					$depth = $depth - 1
+				}
+				if collect_maps and f.map and $starts.len() >= f.mark + 4 {
 					$maps = $maps.append({ head: f.head, at: f.at, end: $p, items: copy_from($starts, f.mark) })
 				}
 				$starts = $starts.drop_last($starts.len() - f.mark)
@@ -2653,8 +2932,11 @@ out_maps = |out| {
 			}
 			match $open.last() {
 				Ok(f) if !f.indefinite and f.left == 0 => {
+					if report_depth and $open.len() > 1 and out_level(out, f.head) {
+						$depth = $depth - 1
+					}
 					$open = $open.drop_last(1)
-					if f.map and $starts.len() >= f.mark + 4 {
+					if collect_maps and f.map and $starts.len() >= f.mark + 4 {
 						$maps = $maps.append({ head: f.head, at: f.at, end: $p, items: copy_from($starts, f.mark) })
 					}
 					$starts = $starts.drop_last($starts.len() - f.mark)
@@ -2666,7 +2948,14 @@ out_maps = |out| {
 			}
 		}
 	}
-	$maps
+	{ maps: $maps, max_depth: $max_depth }
+}
+
+## An array, map or tag adds a physical nesting level; strings do not.
+out_level : List(U8), U64 -> Bool
+out_level = |out, pos| {
+	major = (out.get(pos) ?? 0).shr_zf_wrap(5)
+	major >= 4 and major <= 6
 }
 
 ## A new list of the items of `list` from `from` to the end. Not a slice, so `list` stays the only reference to its items.
@@ -2690,8 +2979,10 @@ count_item = |open|
 ## The output with the entries of each map sorted by their key bytes (RFC 8949 4.2.1). `Err(DuplicateMapKey)`: two
 ## entries of one map have the same key bytes.
 sort_maps : List(U8) -> Try(List(U8), [DuplicateMapKey])
-sort_maps = |out| {
-	maps = out_maps(out)
+sort_maps = |out| sort_known_maps(out, out_maps(out, Bool.True, Bool.False).maps)
+
+sort_known_maps : List(U8), List(OutMap) -> Try(List(U8), [DuplicateMapKey])
+sort_known_maps = |out, maps| {
 	if maps.is_empty() {
 		return Ok(out)
 	}
@@ -2806,6 +3097,35 @@ first_region = |regions, pos| {
 	$lo
 }
 
+read_dec : Cbor, Cbor.Reader -> Try({ value : Dec, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])
+read_dec = |cbor, tagged| {
+	state = if (cbor.read.encoder_forms) at_content(cbor, tagged)? else untag(cbor, tagged)?
+	h = head(state)?
+	match h.major {
+		0 => Ok({ value: Dec.from_attos(h.arg.to_i128() * dec_scale), rest: at(state, h.next) })
+		1 => Ok({ value: Dec.from_attos((-1 - h.arg.to_i128()) * dec_scale), rest: at(state, h.next) })
+		3 if cbor.read.dec_from_text => {
+			t = text(state)?
+			d = dec_text(t.value) ? |_| InvalidCbor(state.pos)
+			Ok({ value: d, rest: t.rest })
+		}
+		6 => decimal_fraction(state, cbor.read.padded)
+		_ => {
+			f = float(state)?
+			# The whole part and the fraction apart: the product of the f64 with 10^18 loses digits.
+			whole = f.value.to_i128_try() ? |_| InvalidCbor(state.pos)
+			if whole.abs_diff(0) > 170141183460469231731 {
+				return Err(InvalidCbor(state.pos))
+			}
+			frac = f.value - whole.to_f64()
+			scaled = frac * 1.0e18
+			frac_attos = (scaled + if (scaled < 0.0) -0.5 else 0.5).to_i128_try() ? |_| InvalidCbor(state.pos)
+			attos = (whole * dec_scale).plus_try(frac_attos) ? |_| InvalidCbor(state.pos)
+			Ok({ value: Dec.from_attos(attos), rest: f.rest })
+		}
+	}
+}
+
 ## The walk rules and the encoding value of a parse with `options`.
 ## One pass over `allow`: a parse with no leniency does no work for them.
 parse_setup : Cbor.Options -> { rules : Rules, cbor : Cbor }
@@ -2814,6 +3134,7 @@ parse_setup = |options| {
 		..strict_read,
 		camel: (options.?fields ?? Snake) == Camel,
 		reject_unknown: (options.?unknown_fields ?? Skip) == Reject,
+		encoder_forms: (options.?forms ?? Compatible) == Encoder,
 	}
 	read = (options.?allow ?? []).fold(
 		start,
@@ -2865,14 +3186,70 @@ with_fields = |fields| Cbor.{ fields, read: strict_read, ignore_tags: [], unions
 
 ## A Dec in attos: an integer when it has no fraction and fits major type 0 or 1, else a decimal fraction.
 put_dec : List(U8), I128 -> List(U8)
-put_dec = |out, attos| {
+put_dec = |out, attos|
+	match preferred_dec(attos) {
+		Integer(n) => put_mantissa(out, n)
+		Fraction({ exponent, mantissa }) => put_mantissa(put_int(out.append(0xc4).append(0x82), exponent), mantissa)
+	}
+
+## One classifier for the encoder and the typed reader; no encoded copy is needed on read.
+preferred_dec : I128 -> [Integer(I128), Fraction({ exponent : I64, mantissa : I128 })]
+preferred_dec = |attos| {
 	whole = attos // dec_scale
-	if attos % dec_scale == 0 and whole >= 0 and whole <= 18446744073709551615 {
-		put_head(out, 0, whole.to_u64_wrap())
-	} else if attos % dec_scale == 0 and whole < 0 and whole >= -18446744073709551616 {
-		put_head(out, 1, (-1 - whole).to_u64_wrap())
-	} else {
-		put_decimal_fraction(out, attos)
+	if attos % dec_scale == 0 and whole >= -18446744073709551616 and whole <= 18446744073709551615 {
+		return Integer(whole)
+	}
+	var $mantissa = attos
+	var $exponent = -18.I64
+	while $mantissa % 10 == 0 {
+		$mantissa = $mantissa // 10
+		$exponent = $exponent + 1
+	}
+	Fraction({ exponent: $exponent, mantissa: $mantissa })
+}
+
+## The exact preferred float head and payload, without allocating an encoding.
+float_form_matches : Cbor.Reader, F64 -> Bool
+float_form_matches = |state, value| {
+	form = preferred_float(value.to_bits())
+	h = out_head(state.bytes, state.pos)
+	state.bytes.get(state.pos) == Ok(form.head) and h.arg == form.bits
+}
+
+## The next position only when the bytes are the preferred encoding of the integer `n`.
+int_form_end : List(U8), U64, I128 -> Try(U64, [NotForm])
+int_form_end = |bytes, pos, n| {
+	negative = n < 0
+	magnitude = (if (negative) -1 - n else n).to_u128_wrap()
+	h = out_head(bytes, pos)
+	if magnitude <= 18446744073709551615 {
+		arg = magnitude.to_u64_wrap()
+		return if (h.major == (if (negative) 1 else 0) and h.arg == arg and h.next == pos + head_size(arg)) Ok(h.next) else Err(NotForm)
+	}
+	if bytes.get(pos) != Ok(if (negative) 0xc3 else 0xc2) {
+		return Err(NotForm)
+	}
+	b = out_head(bytes, h.next)
+	if b.major != 2 or b.arg < 9 or b.arg > 16 or b.next != h.next + 1 or bytes.get(b.next) == Ok(0) {
+		return Err(NotForm)
+	}
+	var $got = 0.U128
+	for i in (0.U64).until(b.arg) {
+		$got = $got.shl_wrap(8).bitwise_or((bytes.get(b.next + i) ?? 0).to_u128())
+	}
+	if ($got == magnitude) Ok(b.next + b.arg) else Err(NotForm)
+}
+
+## The normalized decimal form, including shortest heads of its tag, array, exponent and mantissa.
+dec_form_matches : Cbor.Reader, I128, U64 -> Bool
+dec_form_matches = |state, attos, end| {
+	bytes = state.bytes
+	pos = state.pos
+	match preferred_dec(attos) {
+		Integer(n) => int_form_end(bytes, pos, n) == Ok(end)
+		Fraction({ exponent, mantissa }) =>
+			bytes.get(pos) == Ok(0xc4) and bytes.get(pos + 1) == Ok(0x82) and
+				int_form_end(bytes, pos + 2, exponent.to_i128()).map_ok(|next| int_form_end(bytes, next, mantissa) == Ok(end)) == Ok(Bool.True)
 	}
 }
 
@@ -2910,21 +3287,29 @@ dec_mantissa = |state, lenient| {
 ## A bignum at `state` (RFC 8949 3.4.3): tag 2 and a byte string n, or tag 3 and n for -1 - n. n has 16 bytes or less
 ## (with no leading zero bytes). Strict, it is the preferred serialization (RFC 8949 4.2.2): no leading zero byte, and more
 ## than 8 bytes, else major type 0 or 1 is the form. `lenient` (`PaddedNumbers`) reads both.
+## A byte string (major type 2), with the reader's own error: `Cbor.parse_bytes` without the codec protocol's
+## wider error, for the readers inside this module.
+bytes_item : Cbor, Cbor.Reader -> Try({ value : List(U8), rest : Cbor.Reader }, [InvalidCbor(U64)])
+bytes_item = |cbor, tagged| {
+	b = string_at(untag(cbor, tagged)?, 2)?
+	Ok({ value: b.bytes, rest: b.rest })
+}
+
 bignum : Cbor.Reader, Bool -> Try({ negative : Bool, size : U128, rest : Cbor.Reader }, [InvalidCbor(U64)])
 bignum = |state, lenient| {
 	h = head(state)?
 	if h.major != 6 or (h.arg != 2 and h.arg != 3) {
 		return Err(InvalidCbor(state.pos))
 	}
-	b = string_at(at(state, h.next), 2)?
+	b = bytes_item(plain, at(state, h.next))?
 	var $lead = 0.U64
-	for byte in b.bytes {
+	for byte in b.value {
 		if byte != 0 {
 			break
 		}
 		$lead = $lead + 1
 	}
-	digits = b.bytes.drop_first($lead)
+	digits = b.value.drop_first($lead)
 	if digits.len() > 16 or (!lenient and ($lead > 0 or digits.len() <= 8)) {
 		return Err(InvalidCbor(state.pos))
 	}
@@ -2976,19 +3361,6 @@ scale_pow10 = |m, shift| {
 	Ok($v)
 }
 
-## The decimal fraction of `attos` (a nonzero count of 10^-18): the tag 4, `[exponent, mantissa]`.
-## The exponent starts at -18, and each trailing zero digit of the mantissa moves to the exponent.
-put_decimal_fraction : List(U8), I128 -> List(U8)
-put_decimal_fraction = |out, attos| {
-	var $m = attos
-	var $e = -18.I64
-	while $m % 10 == 0 {
-		$m = $m // 10
-		$e = $e + 1
-	}
-	put_mantissa(put_int(out.append(0xc4).append(0x82), $e), $m)
-}
-
 ## An integer when it fits major type 0 or 1, else a bignum: tag 2 (tag 3: -1 - n) and a byte string.
 put_mantissa : List(U8), I128 -> List(U8)
 put_mantissa = |out, m|
@@ -3026,6 +3398,7 @@ dec_scale = 1_000_000_000_000_000_000
 ReadRules : {
 	camel : Bool,
 	reject_unknown : Bool,
+	encoder_forms : Bool,
 	bool_from_int : Bool,
 	float_to_int : Bool,
 	int_from_text : Bool,
@@ -3043,6 +3416,7 @@ strict_read : ReadRules
 strict_read = {
 	camel: Bool.False,
 	reject_unknown: Bool.False,
+	encoder_forms: Bool.False,
 	bool_from_int: Bool.False,
 	float_to_int: Bool.False,
 	int_from_text: Bool.False,
@@ -3098,6 +3472,38 @@ exact_key_dups = |state, parsed, dups| {
 	} else {
 		Err(InvalidCbor(state.pos))
 	}
+}
+
+## The item at `state` is read as it is: not a byte of a byte string read as a `List(U8)`, not the map of an internal
+## tag (`at_content`), and no tag of `ignore_tags` can be before it (`skip_tags`). Then `untag` gives `state`.
+plain_at : Cbor, Cbor.Reader -> Bool
+plain_at = |cbor, state| state.raw == 0 and state.pos != cbor.content.at and cbor.ignore_tags.is_empty()
+
+## A text of 255 bytes or less with a head of 1 or 2 bytes (`60` to `78`) at a plain position (`plain_at`): the fast path of
+## `parse_str` and of a record key. `NotShort` for each other case, and for invalid UTF-8 (the slow path gives the error).
+short_text : Cbor, Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [NotShort])
+short_text = |cbor, state| if (plain_at(cbor, state)) short_text_at(state) else Err(NotShort)
+
+## `short_text` with no check of the position, for a reader that reads the text where it is (a `Dict` key, `text`).
+## Not in a byte string read as a `List(U8)` (`raw`).
+short_text_at : Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [NotShort])
+short_text_at = |state| {
+	b = state.bytes.get(state.pos) ? |_| NotShort
+	if b < 0x60 or b > 0x78 or state.raw > 0 {
+		return Err(NotShort)
+	}
+	# `78`: the length is the next byte (24 to 255 bytes).
+	(len, start) =
+		if b == 0x78 {
+			((state.bytes.get(state.pos + 1) ? |_| NotShort).to_u64(), state.pos + 2)
+		} else {
+			((b - 0x60).to_u64(), state.pos + 1)
+		}
+	if len > state.bytes.len() - start {
+		return Err(NotShort)
+	}
+	value = Str.from_utf8(state.bytes.sublist({ start, len })) ? |_| NotShort
+	Ok({ value, rest: at(state, start + len) })
 }
 
 ## The item that the reader of a type reads at `state`: the item at the content key when `state` is at the map
@@ -3664,6 +4070,13 @@ read_value = |state| {
 						match it.major {
 							0 => Item(Cbor.Value.Int(Cbor.IntValue.(it.arg.to_i128())))
 							1 => Item(Cbor.Value.Int(Cbor.IntValue.(-1 - it.arg.to_i128())))
+							# A string of definite length is the `arg` bytes before `next`: no second read of its head.
+							2 if !indefinite_string(state.bytes, $pos) => Item(Cbor.Value.Bytes(state.bytes.sublist({ start: it.next - it.arg, len: it.arg })))
+							3 if !indefinite_string(state.bytes, $pos) =>
+								match Str.from_utf8(state.bytes.sublist({ start: it.next - it.arg, len: it.arg })) {
+									Ok(t) => Item(Cbor.Value.Text(t))
+									Err(_) => return Err(InvalidCbor($pos))
+								}
 							2 => Item(Cbor.Value.Bytes(string_at(at(state, $pos), 2)?.bytes))
 							3 => Item(Cbor.Value.Text(text(at(state, $pos))?.value))
 							7 =>
@@ -3690,6 +4103,10 @@ read_value = |state| {
 				# The first key of a map can be a key to skip (`Last`). One instance of each key stays.
 				skipped_to = if (f.kind == MapFrame) skip_keys(at(state, $pos), f.left)? else { pos: $pos, left: f.left }
 				$pos = skipped_to.pos
+				# Room for the items of a definite length at once (an indefinite length has more items than bytes).
+				if skipped_to.left <= state.bytes.len() {
+					$values = $values.reserve(skipped_to.left)
+				}
 				$frames = $frames.append({ kind: f.kind, left: skipped_to.left, start: $values.len() })
 			}
 			Item(first) => {
@@ -3712,9 +4129,8 @@ read_value = |state| {
 								$closing = Bool.False
 							} else {
 								$frames = $frames.drop_last(1)
-								items = $values.drop_first(top.start).append($v)
+								$v = close_frame(top.kind, $values, top.start, $v)
 								$values = $values.take_first(top.start)
-								$v = frame_value(top.kind, items)
 							}
 						}
 					}
@@ -3727,6 +4143,29 @@ read_value = |state| {
 		Err(NotDone) => Err(InvalidCbor(state.pos))
 	}
 }
+
+## The head at `p` is a string of indefinite length (`5f` or `7f`): its chunks are joined.
+indefinite_string : List(U8), U64 -> Bool
+indefinite_string = |bytes, p| (bytes.get(p) ?? 0).bitwise_and(31) == 31
+
+## The value of a whole array, map or tag: its items are `values` from `start`, then `last`. A map takes its pairs from
+## `values` in place: no list of its items first (`frame_value`), so one copy of the items less.
+close_frame : [TagFrame(U64), ArrayFrame, MapFrame], List(Cbor.Value), U64, Cbor.Value -> Cbor.Value
+close_frame = |kind, values, start, last|
+	match kind {
+		MapFrame => {
+			n = values.len() - start
+			var $pairs = List.with_capacity((n + 1) // 2)
+			var $i = start
+			while $i + 1 < values.len() {
+				$pairs = $pairs.append((values.get($i) ?? Cbor.Value.Null, values.get($i + 1) ?? Cbor.Value.Null))
+				$i = $i + 2
+			}
+			# The key of the last pair is the last of `values`, and `last` is its value.
+			Cbor.Value.Map(Cbor.ValueMap.($pairs.append((values.get($i) ?? Cbor.Value.Null, last))))
+		}
+		_ => frame_value(kind, values.drop_first(start).append(last))
+	}
 
 ## The value of a whole array, map or tag from its items.
 frame_value : [TagFrame(U64), ArrayFrame, MapFrame], List(Cbor.Value) -> Cbor.Value
@@ -3797,12 +4236,20 @@ put_value = |out, value| {
 					}
 					Array(items) => {
 						$out = put_head($out, 4, items.len())
-						$todo = $todo.concat(items.rev())
+						# The items in reverse order, with no reversed copy of the list.
+						var $i = items.len()
+						while $i > 0 {
+							$i = $i - 1
+							$todo = $todo.append(items.get($i) ?? Null)
+						}
 					}
 					Map(map) => {
 						pairs = map.to_list()
 						$out = put_head($out, 5, pairs.len())
-						for (k, x) in pairs.rev() {
+						var $j = pairs.len()
+						while $j > 0 {
+							$j = $j - 1
+							(k, x) = pairs.get($j) ?? (Null, Null)
 							$todo = $todo.append(x).append(k)
 						}
 					}
@@ -4126,22 +4573,57 @@ item_with = |bytes, p, rules, utf8| {
 	}
 }
 
-## The `len` bytes at `start` are valid UTF-8. Short ASCII text (most keys) needs no call of `Str.from_utf8`:
-## an ASCII byte is valid UTF-8. At the first other byte, `Str.from_utf8` checks all the bytes.
+## The `len` bytes at `start` are valid UTF-8 (RFC 3629): one pass, with the width of each code point from its first
+## byte and the range of its second byte (no overlong form, no surrogate, nothing above U+10FFFF), as `Str.from_utf8`.
+## TODO(roc#13025): `Str.from_utf8` out of line decodes each code point and checks the last bytes again (4.6x Rust on
+## short text). When the issue is fixed, go back to `Str.from_utf8(bytes.sublist({ start, len })).is_ok()`, and
+## remove `utf8_tail`. The test "valid_utf8 agrees with Str.from_utf8" stays.
 valid_utf8 : List(U8), U64, U64 -> Bool
 valid_utf8 = |bytes, start, len| {
-	if len <= 32 {
-		var $i = start
-		while $i < start + len {
-			if (bytes.get($i) ?? 0x80) >= 0x80 {
-				return Str.from_utf8(bytes.sublist({ start, len })).is_ok()
-			}
+	end = start + len
+	var $i = start
+	while $i < end {
+		b = bytes.get($i) ?? 0xff
+		if b < 0x80 {
 			$i = $i + 1
+		} else {
+			width =
+				if b >= 0xc2 and b <= 0xdf {
+					2
+				} else if b >= 0xe0 and b <= 0xef {
+					3
+				} else if b >= 0xf0 and b <= 0xf4 {
+					4
+				} else {
+					return Bool.False
+				}
+			if width > end - $i or !utf8_tail(bytes, $i, b, width) {
+				return Bool.False
+			}
+			$i = $i + width
 		}
-		Bool.True
-	} else {
-		Str.from_utf8(bytes.sublist({ start, len })).is_ok()
 	}
+	Bool.True
+}
+
+## The bytes after the first byte `b` of a code point of `width` bytes at `i`: the second byte in the range that `b`
+## allows, each other byte a continuation byte (`80` to `bf`).
+utf8_tail : List(U8), U64, U8, U64 -> Bool
+utf8_tail = |bytes, i, b, width| {
+	second = bytes.get(i + 1) ?? 0
+	(lo, hi) =
+		match b {
+			0xe0 => (0xa0, 0xbf)
+			0xed => (0x80, 0x9f)
+			0xf0 => (0x90, 0xbf)
+			0xf4 => (0x80, 0x8f)
+			_ => (0x80, 0xbf)
+		}
+	cont = |k| {
+		c = bytes.get(i + k) ?? 0
+		c >= 0x80 and c <= 0xbf
+	}
+	second >= lo and second <= hi and (width < 3 or cont(2)) and (width < 4 or cont(3))
 }
 
 get_be : List(U8), U64, U64 -> U64
@@ -4158,6 +4640,10 @@ get_be = |bytes, start, size| {
 
 text : Cbor.Reader -> Try({ value : Str, rest : Cbor.Reader }, [InvalidCbor(U64)])
 text = |state| {
+	match short_text_at(state) {
+		Ok(short) => return Ok(short)
+		Err(NotShort) => {}
+	}
 	t = text_head(state)?
 	value = Str.from_utf8(t.name) ? |_| InvalidCbor(state.pos)
 	Ok({ value, rest: t.rest })
@@ -4299,13 +4785,43 @@ pow2 = |e| {
 skip : Cbor.Reader -> Try(Cbor.Reader, [InvalidCbor(U64)])
 skip = |state| {
 	# An item with no items in it (most unknown fields) needs no walk state. On an error, the walk gives the position.
-	if state.raw == 0 {
-		match item_at(state.bytes, state.pos, any_length) {
-			Ok(it) if it.items == 0 => return Ok(at(state, it.next))
-			_ => {}
+	# A flat array or map of definite length (each item with no items in it): a count, no walk state.
+	# TODO(roc#13035): one expression with no early return (see `nest`).
+	end =
+		if state.raw > 0 {
+			Err(Nested)
+		} else {
+			match item_at(state.bytes, state.pos, any_length) {
+				Ok(it) if it.items == 0 => Ok(it.next)
+				Ok(it) if it.major == 4 or it.major == 5 => skip_flat(state.bytes, it.next, it.items)
+				_ => Err(Nested)
+			}
 		}
+	match end {
+		Ok(e) => Ok(at(state, e))
+		Err(Nested) => walk(state, any_length, Bool.False)
 	}
-	walk(state, any_length, Bool.False)
+}
+
+## The end of `items` whole items from `p`, each with no items in it (`item_at`). `Nested` at an item with items in it,
+## at an error, and for a count larger than the bytes (an indefinite length has `until_break` items): `walk` reads
+## those, with the same end or the same error position.
+skip_flat : List(U8), U64, U64 -> Try(U64, [Nested])
+skip_flat = |bytes, p, items| {
+	if items > bytes.len() - p {
+		return Err(Nested)
+	}
+	var $q = p
+	var $k = 0.U64
+	while $k < items {
+		it = item_at(bytes, $q, any_length) ? |_| Nested
+		if it.items != 0 {
+			return Err(Nested)
+		}
+		$q = it.next
+		$k = $k + 1
+	}
+	Ok($q)
 }
 
 ## Walks one whole item with the checks of `item_at` and `rules`, and gives the reader after it (`walk_from` on all
@@ -4317,6 +4833,16 @@ walk = |state, rules, keep| {
 		return Err(InvalidCbor(error_pos(state)))
 	}
 	m = memo_of(state)
+	# The common case first: no map ends to keep or to use, no key order. `fast_walk` gives the same end, or `Slow`.
+	if !keep and m.map_ends.is_empty() and rules.order == Any {
+		match fast_walk(state.bytes, state.pos, rules) {
+			Ok(pos) => {
+				end = moved(state, pos, 0)
+				return if (rules.keys != Any) Ok(with_memo(end, { ..m, skips: [] })) else Ok(end)
+			}
+			Err(Slow) => {}
+		}
+	}
 	w =
 		match walk_from(state.bytes, walk_start(state.pos, m.map_ends, keep), rules)? {
 			Whole(ws) => ws
@@ -4331,6 +4857,98 @@ walk = |state, rules, keep| {
 		# With no `keep`, `w.ends` is the list of `state`.
 		Ok(end)
 	}
+}
+
+## The walk of one whole item of definite length with the checks of `item_at` and `rules`, in one loop with no
+## walk state: the position after the item. `Slow` for each case that it does not take, and for each error, so that
+## `walk_from` gives the result and the error position: an indefinite length or a break, a reserved head, a cut item,
+## more items than `max_items` or than the bytes left, more open items than `max_depth`, a key that is an array, a
+## map or a tag, and a duplicate key (`Reject` is an error; `First` and `Last` need the keys to skip).
+## `open` holds two numbers for each open item, the innermost last: the items left in it, and the index of its first
+## key in `keys` (for a map with a key rule, else `no_pos`). `keys` has the start and end of each key of the open maps.
+fast_walk : List(U8), U64, Rules -> Try(U64, [Slow])
+fast_walk = |bytes, start, rules| {
+	n = bytes.len()
+	check = rules.keys != Any
+	var $open = List.with_capacity(32)
+	var $keys = []
+	var $left = 1.U64
+	var $first = no_pos
+	var $count = 0.U64
+	var $p = start
+	var $more = Bool.True
+	while $more {
+		if $left == 0 {
+			# The innermost open item is whole: compare the keys of a map, and go back to the item it is in.
+			if $first != no_pos {
+				found = dup_keys(bytes, $keys.drop_first($first), rules) ? |_| Slow
+				if !found.is_empty() {
+					return Err(Slow)
+				}
+				$keys = $keys.take_first($first)
+			}
+			k = $open.len()
+			if k == 0 {
+				$more = Bool.False
+			} else {
+				$left = $open.get(k - 2) ?? 0
+				$first = $open.get(k - 1) ?? no_pos
+				$open = $open.drop_last(2)
+			}
+		} else {
+			b = bytes.get($p) ? |_| Slow
+			major = b.shr_zf_wrap(5)
+			info = b.bitwise_and(31)
+			var $arg = info.to_u64()
+			var $q = $p + 1
+			if info >= 24 {
+				size =
+					match info {
+						24 => 1
+						25 => 2
+						26 => 4
+						27 => 8
+						_ => return Err(Slow)
+					}
+				if $q + size > n {
+					return Err(Slow)
+				}
+				$arg = get_be(bytes, $q, size)
+				least = if (size == 1) 24 else (1.U64).shl_wrap((4 * size).to_u8_wrap())
+				if rules.shortest_heads and major != 7 and $arg < least {
+					return Err(Slow)
+				}
+				$q = $q + size
+			}
+			if $count >= rules.max_items {
+				return Err(Slow)
+			}
+			$count = $count + 1
+			is_key = $first != no_pos and $left % 2 == 0
+			$left = $left - 1
+			if major == 2 or major == 3 {
+				if $arg > n - $q or (major == 3 and !valid_utf8(bytes, $q, $arg)) {
+					return Err(Slow)
+				}
+				$q = $q + $arg
+			} else if major >= 4 and major <= 6 {
+				if is_key or $open.len() // 2 >= rules.max_depth or (major != 6 and $arg > n - $q) {
+					return Err(Slow)
+				}
+				$open = $open.append($left).append($first)
+				$left = if (major == 4) $arg else if (major == 5) 2 * $arg else 1
+				$first = if (check and major == 5) $keys.len() else no_pos
+			} else if b == 0xf8 and $arg < 32 {
+				# A simple value of 2 bytes below 32 is not well formed (RFC 8949 3.3).
+				return Err(Slow)
+			}
+			if is_key {
+				$keys = $keys.append($p).append($q)
+			}
+			$p = $q
+		}
+	}
+	Ok($p)
 }
 
 ## The state of a walk of one item, kept between two calls of `walk_from`. Each position is in the bytes of the walk.
@@ -5234,7 +5852,7 @@ end_items = |items| {
 
 ## `Cbor.Items.push`: the items that are whole after `chunk`, each read with `parse_shape`, and the next decoder or
 ## the error. The items before an error are in `values`.
-push_items : Cbor.Items, List(U8), (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), (U64 -> [InvalidCbor(U64), ..e]) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), ..e]) }
+push_items : Cbor.Items, List(U8), (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (U64 -> [InvalidCbor(U64), MissingRequiredField(Str), ..e]) -> { values : List(a), rest : Try(Cbor.Items, [InvalidCbor(U64), MissingRequiredField(Str), ..e]) }
 push_items = |items, chunk, parse_shape, too_large| {
 	var $s = append_items(items, chunk)
 	var $values = []
@@ -5273,11 +5891,11 @@ widen_parser = |parse| |state|
 
 ## A reader that reads no value: for `finish`, which needs no type. After `push`, no item of the bytes is whole, so
 ## the end of the input gives `End` or the error of the cut item before a reader runs.
-no_parse : Cbor.Reader -> Try({ value : {}, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])
+no_parse : Cbor.Reader -> Try({ value : {}, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str), ..e])
 no_parse = |state| Err(InvalidCbor(state.pos))
 
 ## `Cbor.Items.finish`: `Ok` when the input can end after the bytes so far, else the error of the cut item.
-finish_items : Cbor.Items -> Try({}, [InvalidCbor(U64), TooLarge(U64)])
+finish_items : Cbor.Items -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64)])
 finish_items = |items|
 	match items_next(end_items(items), no_parse, |p| TooLarge(p)) {
 		Ok(End(_)) => Ok({})
@@ -5288,7 +5906,7 @@ finish_items = |items|
 
 ## The next step of `items`: the heads of the root, then one item read with `parse_shape`. `too_large` makes the
 ## error of an item larger than the limit (`TooLarge`; `parse_sequence` has no limit and no such tag).
-items_next : Cbor.Items, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), (U64 -> [InvalidCbor(U64), ..e]) -> Try([Item(a, Cbor.Items), NeedInput(Cbor.Items), End(Cbor.Items)], [InvalidCbor(U64), ..e])
+items_next : Cbor.Items, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (U64 -> [InvalidCbor(U64), MissingRequiredField(Str), ..e]) -> Try([Item(a, Cbor.Items), NeedInput(Cbor.Items), End(Cbor.Items)], [InvalidCbor(U64), MissingRequiredField(Str), ..e])
 items_next = |items, parse_shape, too_large| {
 	var $s = items
 	while $s.phase == Head {
@@ -5450,7 +6068,7 @@ end_entries = |entries| {
 
 ## `Cbor.Entries.push`: the entries that are whole after `chunk`, and the next decoder or the error. The entries
 ## before an error are in `values`.
-push_entries : Cbor.Entries, List(U8), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])) -> { values : List((k, v)), rest : Try(Cbor.Entries, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e]) }
+push_entries : Cbor.Entries, List(U8), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> { values : List((k, v)), rest : Try(Cbor.Entries, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, ..e]) }
 push_entries = |entries, chunk, parse_key, parse_value| {
 	var $s = append_entries(entries, chunk)
 	var $values = []
@@ -5479,7 +6097,7 @@ push_entries = |entries, chunk, parse_key, parse_value| {
 }
 
 ## `Cbor.Entries.finish`: `Ok` when the input can end after the bytes so far, else the error of the cut entry.
-finish_entries : Cbor.Entries -> Try({}, [InvalidCbor(U64), TooLarge(U64), NotStreamable])
+finish_entries : Cbor.Entries -> Try({}, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable])
 finish_entries = |entries|
 	match entries_next(end_entries(entries), no_parse, no_parse) {
 		Ok(End(_)) => Ok({})
@@ -5496,7 +6114,7 @@ moved_items = |items, off, phase, cut, count| {
 }
 
 ## A key reader `parse` with the check of a key of a `Dict` (`exact_key_dups` with `dups`): only the form that the writer writes.
-exact_key_with : Cbor.Reader, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), [Keep, First, Last] -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), ..e]) where [a.Cbor.Encodable([])]
+exact_key_with : Cbor.Reader, (Cbor.Reader -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), [Keep, First, Last] -> Try({ value : a, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str), ..e]) where [a.Cbor.Encodable([])]
 exact_key_with = |state, parse, dups| {
 	parsed = parse(state)?
 	match exact_key_dups(state, parsed, dups) {
@@ -5507,7 +6125,7 @@ exact_key_with = |state, parse, dups| {
 
 ## The next step of `entries`: the heads of the root map, then the steps of `entry_step` until an entry, a wait or
 ## the end. With `duplicate_keys: Last` and `key_order: Any`, the error `NotStreamable` before any byte is read.
-entries_next : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])) -> Try([Entry(k, v, Cbor.Entries), NeedInput(Cbor.Entries), End(Cbor.Entries)], [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])
+entries_next : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> Try([Entry(k, v, Cbor.Entries), NeedInput(Cbor.Entries), End(Cbor.Entries)], [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, ..e])
 entries_next = |entries, parse_key, parse_value| {
 	{ items, part, held, held_key, held_skips, keys, prev, first } = entries
 	if items.rules.keys == Last and items.rules.order == Any {
@@ -5547,7 +6165,7 @@ entries_next = |entries, parse_key, parse_value| {
 ## One step of the entries of the root map (after its head): the key of the open entry, its value, the end of the
 ## map, or the bytes after it. `Again`: a step was made, and more can follow. `Give`: an entry. `Wait`: more bytes
 ## are needed. `Done`: the map is complete and the input ended at its end.
-entry_step : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])) -> Try({ entries : Cbor.Entries, out : [Again, Give(k, v), Wait, Done] }, [InvalidCbor(U64), TooLarge(U64), NotStreamable, ..e])
+entry_step : Cbor.Entries, (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> Try({ entries : Cbor.Entries, out : [Again, Give(k, v), Wait, Done] }, [InvalidCbor(U64), MissingRequiredField(Str), TooLarge(U64), NotStreamable, ..e])
 entry_step = |entries, parse_key, parse_value| {
 	{ items, part, held, held_key, held_skips, keys, prev, first } = entries
 	buf = items.buf
@@ -5689,7 +6307,7 @@ entry_step = |entries, parse_key, parse_value| {
 
 ## The typed key and value of the entry at `start` in `buf`: the key has `key_len` bytes, and the value ends at `end`.
 ## `skips`: the keys that `duplicate_keys` skips inside them. The error positions are in the stream (`base`).
-read_entry : List(U8), U64, U64, U64, U64, List(U64), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), ..e])) -> Try((k, v), [InvalidCbor(U64), ..e])
+read_entry : List(U8), U64, U64, U64, U64, List(U64), (Cbor.Reader -> Try({ value : k, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])), (Cbor.Reader -> Try({ value : v, rest : Cbor.Reader }, [InvalidCbor(U64), MissingRequiredField(Str)])) -> Try((k, v), [InvalidCbor(U64), MissingRequiredField(Str), ..e])
 read_entry = |buf, base, start, key_len, end, skips, parse_key, parse_value| {
 	at_key = at(reader(buf), start)
 	state = if (skips.is_empty()) at_key else with_memo(at_key, { ..no_memo, skips: skips.sort_with(|a, b| if (a < b) Before else if (a > b) After else Same) })
@@ -6267,27 +6885,56 @@ encode_step! = |state, steps| {
 
 # RFC 8949 Appendix A vectors (the part in this profile)
 
+## The U64 0 writes as 00.
 expect Cbor.encode(0.U64) == [0x00]
+
+## The U64 23 writes as 17, in the head.
 expect Cbor.encode(23.U64) == [0x17]
+
+## The U64 24 writes as 18 18, with a 1-byte argument.
 expect Cbor.encode(24.U64) == [0x18, 0x18]
+
+## The U64 1000 writes as 19 03 e8, with a 2-byte argument.
 expect Cbor.encode(1000.U64) == [0x19, 0x03, 0xe8]
+
+## The U64 1000000 writes as 1a 00 0f 42 40, with a 4-byte argument.
 expect Cbor.encode(1000000.U64) == [0x1a, 0x00, 0x0f, 0x42, 0x40]
+
+## The largest U64 writes as 1b and 8 bytes of ff.
 expect Cbor.encode(18446744073709551615.U64) == [0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## The I64 -1 writes as 20.
 expect Cbor.encode(-1.I64) == [0x20]
+
+## The I64 -1000 writes as 39 03 e7.
 expect Cbor.encode(-1000.I64) == [0x39, 0x03, 0xe7]
+
+## The F64 1.1 writes as an f64 (fb 3f f1 99 99 99 99 99 9a).
 expect Cbor.encode(1.1.F64) == [0xfb, 0x3f, 0xf1, 0x99, 0x99, 0x99, 0x99, 0x99, 0x9a]
+
+## Bool.True writes as f5.
 expect Cbor.encode(Bool.True) == [0xf5]
+
+## The text "IETF" writes as 64 and its 4 bytes.
 expect Cbor.encode("IETF") == [0x64, 0x49, 0x45, 0x54, 0x46]
+
+## The text "ü" writes as 62 c3 bc (2 bytes of UTF-8).
 expect Cbor.encode("\u(fc)") == [0x62, 0xc3, 0xbc]
+
+## The list [1, 2, 3] writes as 83 01 02 03.
 expect Cbor.encode([1.U64, 2, 3]) == [0x83, 0x01, 0x02, 0x03]
+
+## The record { a: 1, b: [2, 3] } writes as a map of 2 with the text keys "a" and "b".
 expect Cbor.encode({ a: 1.U64, b: [2.U64, 3] }) == [0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x82, 0x02, 0x03]
 
+## A U64 with an 8-byte head (1b 00 00 00 e8 d4 a5 10 00) reads as 1000000000000.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse([0x1b, 0x00, 0x00, 0x00, 0xe8, 0xd4, 0xa5, 0x10, 0x00])
 	r == Ok(1000000000000)
 }
 
+## An I64 reads 38 63 as -100.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse([0x38, 0x63])
@@ -6301,6 +6948,7 @@ expect {
 	r == Ok([1.5, 65504.0, 0.00000005960464477539063, -4.0])
 }
 
+## An F64 reads the f32 fa 47 c3 50 00 as 100000.0.
 expect {
 	r : Try(F64, _)
 	r = Cbor.parse([0xfa, 0x47, 0xc3, 0x50, 0x00])
@@ -6325,6 +6973,7 @@ expect {
 
 Pkg : { name : Str, version : Str, size : U64, tags : List(Str), yanked : Bool }
 
+## A Pkg record (text, a number, a list of text, a bool) round trips.
 expect {
 	p : Pkg
 	p = { name: "roc-lang/http", version: "2.0.0", size: 51385, tags: ["http", "web"], yanked: Bool.False }
@@ -6341,6 +6990,7 @@ expect {
 	r == Ok({ name: "x", nick: Err(Missing) })
 }
 
+## A record with no "age" field for a required age is the error MissingRequiredField("age").
 expect {
 	r : Try({ name : Str, age : U64 }, _)
 	r = Cbor.parse(Cbor.encode({ name: "x" }))
@@ -6356,6 +7006,7 @@ expect {
 
 Shape : [Circle(F64), Rect(F64, F64), Empty]
 
+## A list of tags, with a payload of 1 and 2 values and with no payload, round trips.
 expect {
 	shapes : List(Shape)
 	shapes = [Circle(1.5), Rect(2.0, 3.0), Empty]
@@ -6367,6 +7018,7 @@ expect {
 ## The same shapes as Json: {"Circle": 1.5} and "Empty"
 expect Cbor.encode(Empty) == [0x65, 0x45, 0x6d, 0x70, 0x74, 0x79]
 
+## With fields: Camel, the key "userId" reads as the field user_id: 7.
 expect {
 	r : Try({ user_id : U64 }, _)
 	r = Cbor.parse_with([0xa1, 0x66, 0x75, 0x73, 0x65, 0x72, 0x49, 0x64, 0x07], { fields: Camel })
@@ -6384,6 +7036,8 @@ expect {
 
 ## A List(U8) writes a byte string (h'010203'). Cbor.U8Array writes an array of numbers.
 expect Cbor.encode([1.U8, 2, 3]) == [0x43, 0x01, 0x02, 0x03]
+
+## A Cbor.U8Array of [1, 2, 3] writes as an array: 83 01 02 03.
 expect Cbor.encode(Cbor.U8Array.([1, 2, 3])) == [0x83, 0x01, 0x02, 0x03]
 
 ## A List(U8) reads a byte string, also as a record field, and round trips.
@@ -6409,18 +7063,21 @@ expect {
 	r == Ok({ id: 7, data: Cbor.U8Array.([0, 255]) })
 }
 
+## An empty array (80) reads as an empty Cbor.U8Array.
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x80])
 	r == Ok(Cbor.U8Array.([]))
 }
 
+## With `FloatToInt`, the f64 3.0 in an array reads as the Cbor.U8Array [3].
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse_with([0x81, 0xfb, 0x40, 0x08, 0, 0, 0, 0, 0, 0], { allow: [FloatToInt] })
 	r == Ok(Cbor.U8Array.([3]))
 }
 
+## With no option, the f64 3.0 in an array is an error at the item (byte 1).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0xfb, 0x40, 0x08, 0, 0, 0, 0, 0, 0])
@@ -6434,18 +7091,21 @@ expect {
 	r == Err(InvalidCbor(2))
 }
 
+## The item -1 is an error at the item (byte 2).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x82, 0x01, 0x20])
 	r == Err(InvalidCbor(2))
 }
 
+## The item 1.5 (an f64) is an error at the item (byte 1).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
 	r == Err(InvalidCbor(1))
 }
 
+## The text item "1" is an error at the item (byte 1).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x81, 0x61, 0x31])
@@ -6459,6 +7119,7 @@ expect {
 	r == Err(InvalidCbor(1))
 }
 
+## An array count of 2^36, more than the input, is an error at the array (byte 0).
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x9b, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00])
@@ -6472,6 +7133,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## The integer 1 is not an array: an error at byte 0.
 expect {
 	r : Try(Cbor.U8Array, _)
 	r = Cbor.parse([0x01])
@@ -6485,12 +7147,14 @@ expect {
 	r == Ok({ id: 7, data: [1, 2, 3] })
 }
 
+## With `BytesFromArray`, the array [1, 2] reads as the List(U8) [1, 2].
 expect {
 	r : Try(List(U8), _)
 	r = Cbor.parse_with([0x82, 0x01, 0x02], { allow: [BytesFromArray] })
 	r == Ok([1, 2])
 }
 
+## With no option, the array [1, 2] read as a List(U8) is an error at the array (byte 0).
 expect {
 	r : Try(List(U8), _)
 	r = Cbor.parse([0x82, 0x01, 0x02])
@@ -6501,18 +7165,38 @@ expect {
 
 ## A Dec with no fraction writes as an integer: an untyped literal list works as a SQL parameter list.
 expect Cbor.encode([1]) == [0x81, 0x01]
+
+## The Dec 0 writes as the integer 00.
 expect Cbor.encode(0.Dec) == [0x00]
+
+## The Dec 1000 writes as the integer 19 03 e8.
 expect Cbor.encode(1000.Dec) == [0x19, 0x03, 0xe8]
+
+## The Dec -1 writes as the integer 20.
 expect Cbor.encode(-1.Dec) == [0x20]
+
+## The Dec -1000 writes as the integer 39 03 e7.
 expect Cbor.encode(-1000.Dec) == [0x39, 0x03, 0xe7]
+
+## The Dec 2^64 - 1 writes as the integer 1b and 8 bytes of ff.
 expect Cbor.encode(18446744073709551615.Dec) == [0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## The Dec -2^64 writes as the integer 3b and 8 bytes of ff.
 expect Cbor.encode(-18446744073709551616.Dec) == [0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
 
 ## A Dec with a fraction writes as a decimal fraction, tag 4 and [exponent, mantissa]: 3.14159 is [-5, 314159].
 expect Cbor.encode(3.14159.Dec) == [0xc4, 0x82, 0x24, 0x1a, 0x00, 0x04, 0xcb, 0x2f]
+
+## The Dec 0.1 writes as the decimal fraction [-1, 1].
 expect Cbor.encode(0.1.Dec) == [0xc4, 0x82, 0x20, 0x01]
+
+## The Dec 1.1 writes as the decimal fraction [-1, 11].
 expect Cbor.encode(1.1.Dec) == [0xc4, 0x82, 0x20, 0x0b]
+
+## The Dec -0.5 writes as the decimal fraction [-1, -5].
 expect Cbor.encode(-0.5.Dec) == [0xc4, 0x82, 0x20, 0x24]
+
+## The smallest unit of a Dec (10^-18) writes as the decimal fraction [-18, 1].
 expect Cbor.encode(0.000000000000000001.Dec) == [0xc4, 0x82, 0x31, 0x01]
 
 ## A whole Dec outside the integer range of CBOR is a decimal fraction too, with a positive exponent: 10^20 is [20, 1].
@@ -6520,7 +7204,11 @@ expect Cbor.encode(100000000000000000000.Dec) == [0xc4, 0x82, 0x14, 0x01]
 
 ## A mantissa outside the 64 bit integers is a bignum (tag 2, tag 3: -1 - n) with a byte string.
 expect Cbor.encode(18446744073709551616.Dec) == [0xc4, 0x82, 0x00, 0xc2, 0x49, 0x01, 0, 0, 0, 0, 0, 0, 0, 0]
+
+## Dec.highest writes as [-18, a tag 2 bignum of 16 bytes 7f ff .. ff].
 expect Cbor.encode(Dec.highest) == [0xc4, 0x82, 0x31, 0xc2, 0x50, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+
+## Dec.lowest writes as [-18, a tag 3 bignum of 16 bytes 7f ff .. ff].
 expect Cbor.encode(Dec.lowest) == [0xc4, 0x82, 0x31, 0xc3, 0x50, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
 
 ## Dec reads an integer, a decimal fraction or a float.
@@ -6530,18 +7218,21 @@ expect {
 	r == Ok(42)
 }
 
+## A Dec reads the integer -2^64 (3b and 8 bytes of ff).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0x3b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
 	r == Ok(-18446744073709551616)
 }
 
+## A Dec reads the f64 1.5 as 1.5.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
 	r == Ok(1.5)
 }
 
+## A Dec reads the f16 1.5 (f9 3e 00) as 1.5.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xf9, 0x3e, 0x00])
@@ -6565,6 +7256,7 @@ expect {
 	r == Ok([300, 0.000000000000000010, 0.000000000000000001])
 }
 
+## With no option, a bignum mantissa with a leading zero byte is an error at its tag (byte 12).
 expect {
 	r : Try(List(Dec), _)
 	r = Cbor.parse([0x83, 0xc4, 0x82, 0x02, 0x03, 0xc4, 0x82, 0x31, 0x0a, 0xc4, 0x82, 0x31, 0xc2, 0x42, 0x00, 0x01])
@@ -6578,6 +7270,7 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## The decimal fraction [21, 1] (10^21) is out of the range of a Dec: an error at the tag (byte 0).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x82, 0x15, 0x01])
@@ -6591,6 +7284,7 @@ expect {
 	r == Ok(0.000000000000000001)
 }
 
+## A decimal fraction with the exponent 2^63 - 1 is an error at its tag (byte 1).
 expect {
 	r : Try(List(Dec), _)
 	r = Cbor.parse([0x82, 0xc4, 0x82, 0x1b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01, 0xc4, 0x82, 0x3b, 0x7f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01])
@@ -6611,18 +7305,21 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## A tag 4 with an array of 3 is an error at the tag (byte 0).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x83, 0x20, 0x01, 0x01])
 	r == Err(InvalidCbor(0))
 }
 
+## A decimal fraction with a text mantissa is an error at the mantissa (byte 3).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x82, 0x20, 0x61, 0x31])
 	r == Err(InvalidCbor(3))
 }
 
+## A bignum mantissa of 17 bytes with no leading zero is an error at the bignum tag (byte 3).
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse([0xc4, 0x82, 0x31, 0xc2, 0x51].concat(List.repeat(1, 17)))
@@ -6659,12 +7356,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## An f64 infinity read as a Dec is an error at byte 0.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse(Cbor.encode(F64.infinity))
 	r == Err(InvalidCbor(0))
 }
 
+## The f64 1.0e30, outside the range of a Dec, is an error at byte 0.
 expect {
 	r : Try(Dec, _)
 	r = Cbor.parse(Cbor.encode(1.0e30.F64))
@@ -6743,6 +7442,7 @@ expect {
 	r == Ok({ n: Err(Missing) })
 }
 
+## An unknown field with 100,000 nested arrays is an error at byte 514, the 513th head.
 expect {
 	r : Try({ n : Try(U64, [Missing]) }, _)
 	r = Cbor.parse([0xa1, 0x61, 0x78].concat(List.repeat(0x81, 100000)).append(0x00))
@@ -6756,12 +7456,14 @@ expect {
 	r == Err(InvalidCbor(1))
 }
 
+## A byte string h'f5' read as a List(Bool) is an error at byte 1.
 expect {
 	r : Try(List(Bool), _)
 	r = Cbor.parse([0x41, 0xf5])
 	r == Err(InvalidCbor(1))
 }
 
+## A byte string h'f6' read as a List(Try(U64, [Null])) is an error at byte 1.
 expect {
 	r : Try(List(Try(U64, [Null])), _)
 	r = Cbor.parse([0x41, 0xf6])
@@ -6789,6 +7491,7 @@ expect {
 	r == Ok([F32.highest, -F32.highest, F32.infinity])
 }
 
+## An f64 NaN reads as an F32 NaN.
 expect {
 	r : Try(F32, _)
 	r = Cbor.parse(Cbor.encode(F64.nan))
@@ -6832,12 +7535,14 @@ expect {
 	r == Ok(9007199254740991)
 }
 
+## With `FloatToInt`, the f64 -(2^53 - 1) reads as the I64 -9007199254740991.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse_with([0xfb, 0xc3, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff], floats)
 	r == Ok(-9007199254740991)
 }
 
+## With no option, the f64 -(2^53 - 1) read as an I64 is an error at byte 0.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse([0xfb, 0xc3, 0x3f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
@@ -6865,18 +7570,21 @@ expect {
 	r == Ok(-9223372036854775808)
 }
 
+## With `IntFromText`, the text "9223372036854775807" reads as the largest I64.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse_with(cbor_text("9223372036854775807"), ints)
 	r == Ok(9223372036854775807)
 }
 
+## With `IntFromText`, the text "0" reads as the I64 0.
 expect {
 	r : Try(I64, _)
 	r = Cbor.parse_with(cbor_text("0"), ints)
 	r == Ok(0)
 }
 
+## With `IntFromText`, the text "18446744073709551615" reads as the largest U64.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with(cbor_text("18446744073709551615"), ints)
@@ -6890,12 +7598,14 @@ expect {
 	r == Err(InvalidCbor(0))
 }
 
+## With `IntFromText`, the text "256" read as a U8 is an error at byte 0.
 expect {
 	r : Try(U8, _)
 	r = Cbor.parse_with(cbor_text("256"), ints)
 	r == Err(InvalidCbor(0))
 }
 
+## With `IntFromText`, the text "-1" read as a U64 is an error at byte 0.
 expect {
 	r : Try(U64, _)
 	r = Cbor.parse_with(cbor_text("-1"), ints)
@@ -6933,6 +7643,7 @@ expect {
 	r == Ok([{ name: "a", id: 123 }])
 }
 
+## With `IntFromText`, the text "1.5" in the field "id" is an error at its position (byte 12).
 expect {
 	r : Try(List({ name : Str, id : I64 }), _)
 	r = Cbor.parse_with([0x81, 0xa2, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x61, 0x61, 0x62, 0x69, 0x64].concat(cbor_text("1.5")), ints)
@@ -6958,22 +7669,38 @@ expect {
 
 ## path_at names the item of an error position.
 expect Cbor.path_at(float_big, 12) == Ok([Index(0), Key("id")])
+
+## path_at of float_big at 7 (the value of "name") is [Index(0), Key("name")].
 expect Cbor.path_at(float_big, 7) == Ok([Index(0), Key("name")])
+
+## path_at of float_big at 1 (the map) is [Index(0)].
 expect Cbor.path_at(float_big, 1) == Ok([Index(0)])
+
+## path_at of float_big at 0 (the root item) is the empty path.
 expect Cbor.path_at(float_big, 0) == Ok([])
 
 ## A position in the middle of an item, at a map key, or past the end: not found.
 expect Cbor.path_at(float_big, 13) == Err(NotFound)
+
+## path_at of float_big at 2 (the key "name") is NotFound.
 expect Cbor.path_at(float_big, 2) == Err(NotFound)
+
+## path_at of float_big at 99 (past the end) is NotFound.
 expect Cbor.path_at(float_big, 99) == Err(NotFound)
 
 ## The second item of an array, after a nested map, and in a tagged value.
 expect Cbor.path_at([0x82, 0xa1, 0x61, 0x61, 0x81, 0x01, 0x02], 6) == Ok([Index(1)])
+
+## path_at at 5 (the item 1 in [{"a": [1]}, 2]) is [Index(0), Key("a"), Index(0)].
 expect Cbor.path_at([0x82, 0xa1, 0x61, 0x61, 0x81, 0x01, 0x02], 5) == Ok([Index(0), Key("a"), Index(0)])
+
+## path_at at 3 (the second item of the array in tag 1) is [Index(1)].
 expect Cbor.path_at([0xc1, 0x82, 0x01, 0x02], 3) == Ok([Index(1)])
 
 ## 512 nested arrays: a loop, not a recursion. path_at has no depth limit, so it finds the item of any depth error.
 expect Cbor.path_at(List.repeat(0x81, 512).append(0x00), 512) == Ok(List.repeat(Index(0), 512))
+
+## path_at of the item in 100,000 nested arrays is 100,000 of Index(0).
 expect Cbor.path_at(List.repeat(0x81, 100000).append(0x00), 100000) == Ok(List.repeat(Index(0), 100000))
 
 ## The rule `shortest_heads` (the default of a parse): a head with more bytes than its argument needs is an error.
@@ -6981,25 +7708,394 @@ expect Cbor.path_at(List.repeat(0x81, 100000).append(0x00), 100000) == Ok(List.r
 strict : Rules
 strict = { max_depth: 512, max_items: U64.highest, shortest_heads: Bool.True, indefinite: Bool.False, keys: Reject, order: Any }
 
+## head_at with the strict rules: 18 17 (a padded 23) is an error at byte 0.
 expect head_at([0x18, 0x17], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 18 18 reads the argument 24.
 expect head_at([0x18, 0x18], 0, strict).map_ok(|h| h.arg) == Ok(24)
+
+## head_at with the strict rules: 39 00 ff (a padded 255) is an error at byte 0.
 expect head_at([0x39, 0x00, 0xff], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 39 01 00 reads the argument 256.
 expect head_at([0x39, 0x01, 0x00], 0, strict).map_ok(|h| h.arg) == Ok(256)
+
+## head_at with the strict rules: 5a 00 00 ff ff (a padded byte string length) is an error at byte 0.
 expect head_at([0x5a, 0x00, 0x00, 0xff, 0xff], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 5a 00 01 00 00 reads the argument 65536.
 expect head_at([0x5a, 0x00, 0x01, 0x00, 0x00], 0, strict).map_ok(|h| h.arg) == Ok(65536)
+
+## head_at with the strict rules: 9b 00 00 00 00 ff ff ff ff (a padded array count) is an error at byte 0.
 expect head_at([0x9b, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff], 0, strict) == Err(InvalidCbor(0))
+
+## head_at with the strict rules: 9b 00 00 00 01 00 00 00 00 reads the argument 2^32.
 expect head_at([0x9b, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00], 0, strict).map_ok(|h| h.arg) == Ok(4294967296)
+
+## head_at with the strict rules: the f16 f9 00 00 is not a padded head, so it reads.
 expect head_at([0xf9, 0x00, 0x00], 0, strict).is_ok()
+
+## walk with the strict rules: 81 18 01 (a padded 1 in an array) is an error at byte 1.
 expect walk(reader([0x81, 0x18, 0x01]), strict, Bool.False).map_ok(|s| s.pos) == Err(InvalidCbor(1))
+
+## skip does not check the shortest heads: it skips 81 18 01 to the end (byte 3).
 expect skip(reader([0x81, 0x18, 0x01])).map_ok(|s| s.pos) == Ok(3)
 
 ## The depth limit: 512 nested arrays walk, 513 is an error at the 513th head.
 expect walk(reader(List.repeat(0x81, 512).append(0x00)), strict, Bool.False).is_ok()
+
+## walk with the strict rules: 513 nested arrays are an error at byte 512, the 513th head.
 expect walk(reader(List.repeat(0x81, 513).append(0x00)), strict, Bool.False).map_ok(|s| s.pos) == Err(InvalidCbor(512))
 
 ## A walk with `keep` gives the start and end of each map. A later walk takes the end of a map from `map_ends`.
 expect walk(reader([0x81, 0xa1, 0x01, 0xa0]), loose, Bool.True).map_ok(|s| memo_of(s).map_ends) == Ok([1, 4])
+
+## skip takes the end of a map from `map_ends`: with the map at 1 ending at 2, the skip ends at byte 2.
 expect skip(with_memo(reader([0x81, 0xa1, 0x01, 0xa0]), { ..no_memo, map_ends: [1, 2] })).map_ok(|s| s.pos) == Ok(2)
+
+## `walk` takes the fast path (`fast_walk`) when it can: it gives the same end, the same keys to skip, and the same
+## error position as `walk_from` alone. Each case where `fast_walk` gives `Slow` is here: an error of a head, of a
+## string, of UTF-8 and of a simple value, a cut item, a count larger than the bytes, an indefinite length, the
+## depth and item limits, a key that is a map, and a duplicate key with each rule.
+general_walk : List(U8), Rules -> Try((U64, List(U64)), [InvalidCbor(U64)])
+general_walk = |bytes, rules|
+	match walk_from(bytes, walk_start(0, [], Bool.False), rules)? {
+		Whole(ws) => Ok((ws.pos, ws.skips.sort_with(|a, b| if (a < b) Before else if (a > b) After else Same)))
+		Cut(ws) => Err(InvalidCbor(cut_pos(bytes, ws)))
+	}
+
+same_as_general : List(U8), Rules -> Bool
+same_as_general = |bytes, rules|
+	walk(reader(bytes), rules, Bool.False).map_ok(|s| (s.pos, memo_of(s).skips)) == general_walk(bytes, rules)
+
+fast_walk_inputs : List(List(U8))
+fast_walk_inputs = [
+	[0xa2, 0x61, 0x61, 0x01, 0x61, 0x62, 0x82, 0x01, 0xf9, 0x3c, 0x00],
+	[0xa2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02],
+	[0xa3, 0x61, 0x61, 0x01, 0x61, 0x62, 0x02, 0x61, 0x61, 0x03],
+	[0xa2, 0x01, 0x02, 0x01, 0x03],
+	[0xa1, 0xa0, 0x01],
+	[0xa1, 0x81, 0x01, 0x02],
+	[0x81, 0x18, 0x01],
+	[0x82, 0x01],
+	[0x9a, 0xff, 0xff, 0xff, 0xff, 0x00],
+	[0x62, 0x61],
+	[0x62, 0xc3, 0x28],
+	[0x63, 0xe6, 0xbc, 0xa2],
+	[0xf8, 0x1f],
+	[0xf8, 0x20],
+	[0x1c],
+	[0xff],
+	[0x9f, 0x01, 0xff],
+	[0x82, 0x5f, 0x41, 0x01, 0xff, 0x02],
+	[0xdb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x01],
+	[0xc1, 0xc2, 0x40],
+	[0xfb, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+	[0x19, 0x00, 0x01],
+	[],
+	List.repeat(0x81, 512).append(0x00),
+	List.repeat(0x81, 513).append(0x00),
+	[0x83, 0xa1, 0x61, 0x6b, 0x01, 0xa2, 0x61, 0x6b, 0x01, 0x61, 0x6b, 0x02, 0x00],
+]
+
+## The strict rules of a parse: the fast walk agrees with walk_from on each input.
+expect fast_walk_inputs.all(|b| same_as_general(b, strict))
+
+## The rules of read_value (no shortest heads, no key rule): the fast walk agrees with walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, loose))
+
+## The rules of skip (indefinite lengths allowed): the fast walk agrees with walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, any_length))
+
+## duplicate_keys First: the same keys to skip as walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, keys: First }))
+
+## duplicate_keys Last: the same keys to skip as walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, keys: Last }))
+
+## max_items 3: the error at the same item as walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_items: 3 }))
+
+## max_depth 1: the error at the same item as walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, max_depth: 1 }))
+
+## PaddedNumbers (no shortest heads): the fast walk agrees with walk_from.
+expect fast_walk_inputs.all(|b| same_as_general(b, { ..strict, shortest_heads: Bool.False }))
+
+## Pieces of CBOR for `random_walk_input`: heads of each major type (short and long, definite and indefinite),
+## keys that repeat, cut and long arguments, bad UTF-8, a break, reserved and simple values.
+walk_tokens : List(List(U8))
+walk_tokens = [
+	[0x00],
+	[0x01],
+	[0x17],
+	[0x18, 0x01],
+	[0x18, 0x18],
+	[0x19, 0x00, 0x01],
+	[0x1a],
+	[0x1c],
+	[0x20],
+	[0x38, 0x05],
+	[0x40],
+	[0x41, 0x01],
+	[0x42],
+	[0x5f],
+	[0x60],
+	[0x61, 0x61],
+	[0x61, 0x62],
+	[0x62, 0xc3, 0x28],
+	[0x63, 0xe6, 0xbc, 0xa2],
+	[0x78, 0x01, 0x61],
+	[0x7f],
+	[0x80],
+	[0x81],
+	[0x82],
+	[0x83],
+	[0x98, 0x02],
+	[0x9f],
+	[0xa0],
+	[0xa1],
+	[0xa2],
+	[0xb8, 0x01],
+	[0xbf],
+	[0xc1],
+	[0xc6],
+	[0xd8, 0x18],
+	[0xf4],
+	[0xf6],
+	[0xf8, 0x1f],
+	[0xf8, 0x20],
+	[0xf9, 0x3c, 0x00],
+	[0xfa, 0x00],
+	[0xfb, 0x3f, 0xf0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
+	[0xfc],
+	[0xff],
+	[0x9a, 0xff, 0xff, 0xff, 0xff],
+	[0x18, 0x17],
+	[0x1a, 0x00, 0x00, 0xff, 0xff],
+	[0x1a, 0x00, 0x01, 0x00, 0x00],
+	[0x1b, 0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff],
+]
+
+## A pseudorandom input of 1 to 12 tokens of `walk_tokens`, from the seed (a 64-bit LCG), and the next seed.
+random_walk_input : U64 -> (List(U8), U64)
+random_walk_input = |seed| {
+	next = |s| s.times_wrap(6364136223846793005).plus_wrap(1442695040888963407)
+	var $s = next(seed)
+	count = $s.shr_zf_wrap(33) % 12 + 1
+	var $out = []
+	var $i = 0.U64
+	while $i < count {
+		$s = next($s)
+		$out = $out.concat(walk_tokens.get($s.shr_zf_wrap(33) % walk_tokens.len()) ?? [])
+		$i = $i + 1
+	}
+	($out, $s)
+}
+
+## A property with a fixed count: 3000 pseudorandom inputs (seed 1), each with 7 sets of rules. The fast walk
+## gives the same end, keys to skip and error position as walk_from alone.
+expect {
+	rule_sets = [
+		strict,
+		loose,
+		any_length,
+		{ ..strict, keys: First },
+		{ ..strict, keys: Last },
+		{ ..strict, max_items: 3 },
+		{ ..strict, max_depth: 1, shortest_heads: Bool.False },
+	]
+	var $seed = 1.U64
+	var $n = 0.U64
+	var $ok = Bool.True
+	while $ok and $n < 3000 {
+		(bytes, s) = random_walk_input($seed)
+		$seed = s
+		$ok = rule_sets.all(|rules| same_as_general(bytes, rules))
+		$n = $n + 1
+	}
+	$ok
+}
+
+## Each cut of a record list: the error at the same position.
+expect {
+	bytes = [0x82, 0xa2, 0x62, 0x69, 0x64, 0x01, 0x64, 0x6e, 0x61, 0x6d, 0x65, 0x62, 0x78, 0x79, 0xa0]
+	cuts : List(U64)
+	cuts = (0.U64).until(bytes.len() + 1).collect()
+	cuts.all(|n| same_as_general(bytes.take_first(n), strict))
+}
+
+## valid_utf8 agrees with Str.from_utf8: each sequence of 1 and 2 bytes, and for 3 and 4 bytes each first and second
+## byte with the third and fourth bytes from a set of edges.
+same_utf8 : List(U8) -> Bool
+same_utf8 = |b| valid_utf8(b, 0, b.len()) == Str.from_utf8(b).is_ok()
+
+all_bytes : List(U8)
+all_bytes = {
+	ns : List(U64)
+	ns = (0.U64).until(256).collect()
+	ns.map(|n| n.to_u8_wrap())
+}
+
+utf8_edges : List(U8)
+utf8_edges = [0x00, 0x7f, 0x80, 0x8f, 0x90, 0x9f, 0xa0, 0xbf, 0xc0, 0xff]
+
+## valid_utf8 agrees with Str.from_utf8 on each 1-byte sequence.
+expect all_bytes.all(|a| same_utf8([a]))
+
+## valid_utf8 agrees with Str.from_utf8 on each 2-byte sequence.
+expect all_bytes.all(|a| all_bytes.all(|b| same_utf8([a, b])))
+
+## valid_utf8 agrees with Str.from_utf8 on 3 bytes: each first and second byte, the third from the edges.
+expect all_bytes.all(|a| all_bytes.all(|b| utf8_edges.all(|c| same_utf8([a, b, c]))))
+
+## valid_utf8 agrees with Str.from_utf8 on 4 bytes: the first bytes f0 to f5, each second byte, the rest from the edges.
+expect [0xf0, 0xf1, 0xf3, 0xf4, 0xf5].all(|a| all_bytes.all(|b| utf8_edges.all(|c| utf8_edges.all(|d| same_utf8([a, b, c, d])))))
+
+## valid_utf8 agrees with Str.from_utf8 on mixed text, a cut code point at the end, and no bytes.
+expect same_utf8("é漢🎉 user-é漢🎉-ü1".to_utf8()) and same_utf8([0x61, 0xe6, 0xbc]) and same_utf8([])
+
+## The fast paths of `parse_str`, of a record key and of `parse_u64` (`short_text`, `plain_at`): each head width, and
+## the cases they give to the general reader, with the same value or error position.
+## A text with a 2-byte head (78) reads on the fast path.
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse([0x78, 0x18].concat(List.repeat('a', 24)))
+	r == Ok(Str.repeat("a", 24))
+}
+
+## A cut text with a 2-byte head: the error at its head, from the general reader.
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse([0x78, 0x18, 'a'])
+	r == Err(InvalidCbor(0))
+}
+
+## Invalid UTF-8 in a short text: the error at its head, from the general reader.
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse([0x62, 0xc3, 0x28])
+	r == Err(InvalidCbor(0))
+}
+
+## With ignore_tags, a text after a tag reads (not a plain position).
+expect {
+	r : Try(Str, _)
+	r = Cbor.parse_with([0xc6, 0x61, 0x61], { ignore_tags: [6] })
+	r == Ok("a")
+}
+
+## parse_u64 reads each head width of major type 0 on the fast path.
+expect {
+	r : Try(List(U64), _)
+	r = Cbor.parse([0x84, 0x17, 0x18, 0x18, 0x19, 0x01, 0x00, 0x1b, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff])
+	r == Ok([23, 24, 256, U64.highest])
+}
+
+## A padded integer head with PaddedNumbers reads its value.
+expect {
+	r : Try(U64, _)
+	r = Cbor.parse_with([0x19, 0x00, 0x05], { allow: [PaddedNumbers] })
+	r == Ok(5)
+}
+
+## An unknown record key with a 2-byte head is skipped.
+expect {
+	r : Try({ ab : U64 }, _)
+	r = Cbor.parse([0xa2, 0x62, 0x61, 0x62, 0x01, 0x78, 0x18].concat(List.repeat('x', 24)).append(0x02))
+	r == Ok({ ab: 1 })
+}
+
+## duplicate_keys Last: the record key fast path does not read the skipped first key.
+expect {
+	r : Try({ ab : U64 }, _)
+	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: Last })
+	r == Ok({ ab: 2 })
+}
+
+## duplicate_keys First: the record key fast path does not read the skipped second key.
+expect {
+	r : Try({ ab : U64 }, _)
+	r = Cbor.parse_with([0xa2, 0x62, 0x61, 0x62, 0x01, 0x62, 0x61, 0x62, 0x02], { duplicate_keys: First })
+	r == Ok({ ab: 1 })
+}
+
+## A Cbor.Value text of definite length with invalid UTF-8 in an array is an error at its head (byte 1).
+expect {
+	r : Try(Cbor.Value, _)
+	r = Cbor.parse([0x81, 0x62, 0xc3, 0x28])
+	r == Err(InvalidCbor(1))
+}
+
+## A Cbor.Value byte string of definite length reads its bytes.
+expect {
+	r : Try(Cbor.Value, _)
+	r = Cbor.parse([0x82, 0x42, 0x01, 0x02, 0x61, 0x61])
+	r == Ok(Cbor.Value.Array([Cbor.Value.Bytes([0x01, 0x02]), Cbor.Value.Text("a")]))
+}
+
+## A Cbor.Value text of indefinite length (with IndefiniteLength) joins its chunks.
+expect {
+	r : Try(Cbor.Value, _)
+	r = Cbor.parse_with([0x7f, 0x61, 0x61, 0x61, 0x62, 0xff], { allow: [IndefiniteLength] })
+	r == Ok(Cbor.Value.Text("ab"))
+}
+
+## parse_f64 reads each float width on its fast path: f16 1.5, f32 1.5 and f64 1.5.
+expect {
+	r : Try(List(F64), _)
+	r = Cbor.parse([0x83, 0xf9, 0x3e, 0x00, 0xfa, 0x3f, 0xc0, 0x00, 0x00, 0xfb, 0x3f, 0xf8, 0, 0, 0, 0, 0, 0])
+	r == Ok([1.5, 1.5, 1.5])
+}
+
+## parse_f64 still reads an integer (the general path).
+expect {
+	r : Try(F64, _)
+	r = Cbor.parse([0x18, 0x64])
+	r == Ok(100.0)
+}
+
+## With ignore_tags, a record after a tag reads (parse_record_start takes the general path).
+expect {
+	r : Try({ a : U64 }, _)
+	r = Cbor.parse_with([0xc6, 0xa1, 0x61, 0x61, 0x01], { ignore_tags: [6] })
+	r == Ok({ a: 1 })
+}
+
+## A cut array of records is an error at the same position as before the fast path (the walk finds it first).
+expect {
+	r : Try(List({ a : U64 }), _)
+	r = Cbor.parse([0x82, 0xa1, 0x61, 0x61, 0x01])
+	r == Err(InvalidCbor(0))
+}
+
+## A record field that is a list of bools reads on the fast paths of parse_list_start and parse_bool.
+expect {
+	r : Try({ b : List(Bool) }, _)
+	r = Cbor.parse([0xa1, 0x61, 0x62, 0x82, 0xf5, 0xf4])
+	r == Ok({ b: [Bool.True, Bool.False] })
+}
+
+## skip of an unknown field that is a flat map, a flat array, and a nested array (the walk).
+expect {
+	r : Try({ a : U64 }, _)
+	r = Cbor.parse([0xa4, 0x61, 0x6d, 0xa1, 0x01, 0x02, 0x61, 0x6c, 0x82, 0x01, 0x02, 0x61, 0x6e, 0x81, 0x81, 0x01, 0x61, 0x61, 0x05])
+	r == Ok({ a: 5 })
+}
+
+## A Dict(Str, U64) key of 24 bytes or more (a 2-byte head) reads on the fast path of text.
+expect {
+	r : Try(Dict(Str, U64), _)
+	r = Cbor.parse([0xa1, 0x78, 0x18].concat(List.repeat('k', 24)).append(0x01))
+	r == Ok(Dict.from_list([(Str.repeat("k", 24), 1)]))
+}
+
+## A Dict(Str, U64) key with invalid UTF-8 is an error at the key (the general path).
+expect {
+	r : Try(Dict(Str, U64), _)
+	r = Cbor.parse([0xa1, 0x62, 0xc3, 0x28, 0x01])
+	r == Err(InvalidCbor(1))
+}
 
 ## Chunk independence of `walk_from`: for each prefix of `bytes`, a walk of the prefix in one part and a walk in two
 ## parts (a walk of the first part, then a walk of the whole prefix from its `Cut` state) give the same result,
@@ -7073,13 +8169,29 @@ with_dup = [0x84, 0xa2, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02, 0xc1, 0x02, 0x1b, 0x
 
 ## Valid items, and items with an error, with each rule set: one part and two parts agree.
 expect same_walks(nested, indefinite_rules, Bool.False)
+
+## nested with indefinite lengths and `keep`: one part and two parts agree.
 expect same_walks(nested, indefinite_rules, Bool.True)
+
+## nested with indefinite lengths, `keys: First` and `keep`: one part and two parts agree.
 expect same_walks(nested, { ..indefinite_rules, keys: First }, Bool.True)
+
+## nested with the rules any_length: one part and two parts agree.
 expect same_walks(nested, any_length, Bool.False)
+
+## with_dup with `keys: First` and `keep`: one part and two parts agree.
 expect same_walks(with_dup, { ..strict, keys: First }, Bool.True)
+
+## with_dup with the strict rules (a duplicate key is an error): one part and two parts agree.
 expect same_walks(with_dup, strict, Bool.False)
+
+## An array with a reserved head (1c) is an error: one part and two parts agree.
 expect same_walks([0x82, 0x01, 0x1c, 0x00], strict, Bool.False)
+
+## A text chunk in a byte string of indefinite length, in a map of indefinite length: one part and two parts agree.
 expect same_walks([0xbf, 0x61, 0x61, 0x5f, 0x41, 0x01, 0x61, 0x02, 0xff, 0xff], indefinite_rules, Bool.False)
+
+## An array count of 2^60 with 2 bytes left: one part and two parts agree.
 expect same_walks([0x9b, 0x10, 0, 0, 0, 0, 0, 0, 0, 0x00, 0x00], strict, Bool.False)
 
 ## The end of a whole walk of `bytes`, or the position of its error.
@@ -7104,22 +8216,50 @@ sorted_dup = [0x82, 0xa3, 0x61, 0x61, 0x01, 0x61, 0x61, 0x02, 0x61, 0x62, 0x03, 
 
 ## key_order: Sorted: the check is in the walk, so a cut and a walk from the cut state give the same result.
 expect same_walks(sorted_nested, sorted_rules, Bool.False)
+
+## sorted_nested with `Sorted`, `keys: First` and `keep`: one part and two parts agree.
 expect same_walks(sorted_nested, { ..sorted_rules, keys: First }, Bool.True)
+
+## sorted_dup with `Sorted` and a duplicate key as an error: one part and two parts agree.
 expect same_walks(sorted_dup, sorted_rules, Bool.False)
+
+## sorted_dup with `Sorted` and `keys: First`: one part and two parts agree.
 expect same_walks(sorted_dup, { ..sorted_rules, keys: First }, Bool.False)
+
+## sorted_dup with `Sorted`, `keys: Last` and `keep`: one part and two parts agree.
 expect same_walks(sorted_dup, { ..sorted_rules, keys: Last }, Bool.True)
+
+## nested with indefinite lengths and `Sorted`: one part and two parts agree.
 expect same_walks(nested, { ..indefinite_rules, order: Sorted }, Bool.False)
+
+## sorted_nested with `Sorted` is whole, with the end at 21.
 expect walk_end(sorted_nested, sorted_rules) == Ok(21)
+
+## sorted_dup with `Sorted` and a duplicate key as an error: the error is at the second "a" (byte 5).
 expect walk_end(sorted_dup, sorted_rules) == Err(5)
+
+## {"b": 1, "a": 2} with `Sorted` and `keys: First`: the key out of order is an error at byte 4.
 expect walk_end(sorted_dup.drop_first(11), { ..sorted_rules, keys: First }) == Err(4)
+
+## {"b": 1, "a": 2} with the strict rules (no order check) is whole, with the end at 7.
 expect walk_end(sorted_dup.drop_first(11), strict) == Ok(7)
+
+## {"a": 1, "a": 2, "b": 3} with `Sorted` and `keys: First`: the key to skip is the second "a" (at 4).
 expect whole_state(walk_from(sorted_dup.sublist({ start: 1, len: 10 }), walk_start(0, [], Bool.False), { ..sorted_rules, keys: First })).map_ok(|ws| ws.skips) == Ok([4])
+
+## {"a": 1, "a": 2, "b": 3} with `Sorted` and `keys: Last`: the key to skip is the first "a" (at 1).
 expect whole_state(walk_from(sorted_dup.sublist({ start: 1, len: 10 }), walk_start(0, [], Bool.False), { ..sorted_rules, keys: Last })).map_ok(|ws| ws.skips) == Ok([1])
 
 ## The order compares the deterministic encoding: a padded head and a float of more bytes than it needs.
 expect order_keys([0x18, 0x0a, 0x20], 0, 2, 2, 3, { ..strict, shortest_heads: Bool.False }) == Before
+
+## order_keys: the f64 1.0 comes before the f32 1.5.
 expect order_keys([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0xfa, 0x3f, 0xc0, 0, 0], 0, 9, 9, 14, strict) == Before
+
+## order_keys: the f64 1.0 and the f16 1.0 are the same key.
 expect order_keys([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0, 0xf9, 0x3c, 0x00], 0, 9, 9, 12, strict) == Same
+
+## deterministic writes the f64 1.0 as the f16 f9 3c 00.
 expect deterministic([0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0], 0, 9, Keep) == [0xf9, 0x3c, 0x00]
 
 ## The state at a cut holds the work so far: the items, the open items, the keys of the open map.
@@ -7128,6 +8268,8 @@ expect
 		Ok(ws) => ws.pos == 5 and ws.count == 4 and ws.open.len() == 2 and ws.keys == [2, 4]
 		Err(_) => Bool.False
 	}
+
+## A whole walk of with_dup with `keys: First` ends at 28, and the key to skip is the second "a" (at 5).
 expect whole_state(walk_from(with_dup, walk_start(0, [], Bool.True), { ..strict, keys: First })).map_ok(|ws| (ws.pos, ws.skips)) == Ok((28, [5]))
 
 ## The truncation rule: the head of the innermost item that is not whole. A chunk of a string of indefinite
@@ -7139,8 +8281,14 @@ expect walk(reader([0xbb, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00])
 
 ## Keys with the shortest heads: the same key with another head width is the same key.
 expect canonical([0x78, 0x01, 0x61, 0x19, 0x00, 0x05], 0, 6, Keep) == [0x61, 0x61, 0x05]
+
+## canonical writes the f16 1.0 as the f64 1.0.
 expect canonical([0xf9, 0x3c, 0x00], 0, 3, Keep) == [0xfb, 0x3f, 0xf0, 0, 0, 0, 0, 0, 0]
+
+## dup_keys with no shortest heads: "a" and "a" with a padded head (78 01 61) are the same key, an error at byte 4.
 expect dup_keys([0xa2, 0x61, 0x61, 0x01, 0x78, 0x01, 0x61, 0x02], [1, 3, 4, 7], { ..strict, shortest_heads: Bool.False }) == Err(InvalidCbor(4))
+
+## dup_keys with the strict rules compares the key bytes as they are: "a" and 78 01 61 differ, no key to skip.
 expect dup_keys([0xa2, 0x61, 0x61, 0x01, 0x78, 0x01, 0x61, 0x02], [1, 3, 4, 7], strict) == Ok([])
 
 ## A key rule for each instance: `First` skips the later ones, `Last` the earlier ones. 20 keys (the sort), 3 of them "a".
@@ -7156,8 +8304,13 @@ many_keys = {
 	{ bytes, keys }
 }
 
+## dup_keys of many_keys with `Reject`: the error is at the second "a" (byte 14).
 expect dup_keys(many_keys.bytes, many_keys.keys, strict) == Err(InvalidCbor(14))
+
+## dup_keys of many_keys with `keys: First`: the keys to skip are the later "a" keys, at 14 and 30.
 expect dup_keys(many_keys.bytes, many_keys.keys, { ..strict, keys: First }) == Ok([14, 30])
+
+## dup_keys of many_keys with `keys: Last`: the keys to skip are the earlier "a" keys, at 0 and 14.
 expect dup_keys(many_keys.bytes, many_keys.keys, { ..strict, keys: Last }) == Ok([0, 14])
 
 ## Options: each field is optional. The full record, a record bound with let (with the annotation `Cbor.Options`), one field, and no field.

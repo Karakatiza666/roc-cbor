@@ -13,4 +13,6 @@ mkdir dist
 asset=$(echo dist/*.tar.zst)
 zstd -dc "$asset" | tar -t >&2
 echo "asset: $asset"
-echo "url: https://github.com/Karakatiza666/roc-cbor/releases/download/$version/$(basename "$asset")"
+# The repository of the release: GITHUB_REPOSITORY in CI (a fork publishes to itself), else the upstream repository.
+repo="${GITHUB_REPOSITORY:-Karakatiza666/roc-cbor}"
+echo "url: https://github.com/$repo/releases/download/$version/$(basename "$asset")"

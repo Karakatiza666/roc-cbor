@@ -1,5 +1,5 @@
-## The platform of scripts/wasm_dev.sh: no host code. The wasm module imports roc_alloc, roc_realloc, roc_dealloc and
-## roc_crashed, and tests/wasm_dev/run.mjs gives them. The script writes an empty host object to targets/wasm32/host.wasm.
+## The platform of scripts/wasm_dev.sh: the wasm module imports roc_alloc, roc_realloc, roc_dealloc and
+## roc_crashed, and tests/wasm_dev/run.mjs gives them. The script writes a stub host object to targets/wasm32/host.wasm.
 platform ""
 	requires {
 		main! : U64 => U64
