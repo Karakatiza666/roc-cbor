@@ -26,7 +26,7 @@ Features:
 
 | Item | Value |
 | --- | --- |
-| Version | 0.5.1. Main has changes after it that change the API (section "Changes", "Unreleased"): the next release is 0.6.0. |
+| Version | 0.6.0. It changes the API of 0.5.1 (section "Changes", table "Migration from 0.5.1"). |
 | Module | `Cbor` (public), with nested types such as `Cbor.Value`, `Cbor.Raw`, `Cbor.Bytes`, `Cbor.Reader`, `Cbor.Writer`, and the stream types `Cbor.Items`, `Cbor.Entries`, `Cbor.ByteChunks`, `Cbor.TextChunks` and `Cbor.StreamWriter` |
 | Dependencies | none |
 | Compiler | the Zig compiler (nightlies of 2026). CI uses the nightly in `.roc-version` (`nightly-2026-11-19-54c51c9`). The 11-07 nightly and older do not compile 0.5.1 or later: use 0.5.0 with them. |
@@ -39,10 +39,10 @@ Features:
 ## Use
 
 Add the package to the header with its release URL. The release notes of each
-[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.5.1.
+[release](https://github.com/Karakatiza666/roc-cbor/releases) give the URL. The latest release is 0.6.0.
 
 ```roc
-app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.5.1/38XQEgbABvGrHkqPVDVMsabgXcBHouMQde1vz4cLchxT.tar.zst" }
+app [main!] { pf: platform "...", cbor: "https://github.com/Karakatiza666/roc-cbor/releases/download/0.6.0/BWQX6N63JpXQjThcHNgnRmiYp93ch2QTckFTxF98KAus.tar.zst" }
 
 import cbor.Cbor
 ```
@@ -863,10 +863,10 @@ The model is the same as the model of `Json`. A peer that reads JSON sees the sa
 
 ## Changes
 
-### Unreleased
+### 0.6.0
 
-The changes on main after 0.5.1, from PR #1 by lukewilliamboswell (PR #3). The next release is 0.6.0, because the API
-changes (table "Migration from 0.5.1"). By default, the bytes that are read and written do not change.
+From PR #1 by lukewilliamboswell (PR #3). A minor release, because the API changes (table "Migration from
+0.5.1"). By default, the bytes that are read and written do not change.
 
 | Change | Detail |
 | --- | --- |
@@ -876,13 +876,14 @@ changes (table "Migration from 0.5.1"). By default, the bytes that are read and 
 | `forms` | A new read option, `forms ?: [Compatible, Encoder]` (default `Compatible`). `Encoder` reads typed `Dec`, `F32` and `F64` only in the form that their encoder writes, and a derived list refuses an empty byte string (section "Options") |
 | A format of your own | `Cbor.Reader.new` and `finish`, `Cbor.Writer.new`, `open`, `finish` and `finish_report`, `Cbor.WriterWith(s)`, `Cbor.ContainerWith(s)`, and `encode_list_carry`, `encode_tuple_carry`, `encode_tag_carry`, `encode_record_carry`, `encode_dict_carry` (section "A format of your own"). `finish_report` also gives the nesting depth of the output. |
 | Speed | A fast walk of the root item, and fast paths of the readers at a plain position: each other case goes to the general reader, with the same values and error positions. The writer checks each place when the next one opens. The writer and `skip` give an error with a `match` and no early return (roc-lang/roc#13035). UTF-8 is checked in one pass in the walk (roc-lang/roc#13025). Measured by the contributor (`--opt=speed`, `nightly-2026-11-13-03dce41`): 10k records read 9.2 to 3.5 ms and write 2.7 to 1.3 ms; 100k map keys into a `Dict` 16 to 8.0 ms, into a `Cbor.Value` 19 to 10.6 ms (peak RSS 25 to 18 MB); 10k records with unknown fields 29 to 12.5 ms; 10k texts 1.5 to 0.74 ms |
-| Compiler | CI uses `nightly-2026-11-19-54c51c9`. In that compiler, a derived `Dict` parser keeps the last value of two keys that are equal by the key type's `is_eq` (roc-lang/roc#13143), and a format cannot change that. `duplicate_keys` still applies to keys with the same bytes. |
-| Fuzz | `fuzz.sh` counts a build with warnings only (exit code 2) as a build: roc-fuzz 0.6.2 has a warning in its platform. The round-trip target also writes each accepted input again. |
+| Compiler | CI uses `nightly-2026-11-19-54c51c9`. In that compiler, a derived `Dict` parser keeps the last value of two keys that are equal by the key type's `is_eq` (roc-lang/roc#13143), and a format cannot change that. `duplicate_keys` still applies to keys with the same bytes. `scripts/all_tests.sh` also passes with `nightly-reify-2026-11-15-ee91030`, the compiler of [roc-reify-surrealdb](https://github.com/Karakatiza666/roc-reify-surrealdb) (a fork, based on the 11-15 nightly). |
+| Fuzz | `fuzz.sh` counts a build with warnings only (exit code 2) as a build: roc-fuzz 0.6.2 has a warning in its platform. The round-trip target also writes each accepted input again. The `stream` target stops at 30 minutes (PR #5). |
+| Bench | `bench/bench.roc dump <fixture>` prints the input bytes of a fixture as hex, for [roc-cbor-bench](https://github.com/Karakatiza666/roc-cbor-bench) (PR #4, from PR #2 by lukewilliamboswell) |
 | Tests | New `tests/forms.roc`, `tests/report.roc` and `tests/outside.roc`, `examples/outside.roc`, and the scale cases `report`, `report_sorted`, `report_bytes` and `report_memory` |
 
 #### Migration from 0.5.1
 
-| 0.5.1 | Unreleased (0.6.0) |
+| 0.5.1 | 0.6.0 |
 | --- | --- |
 | `where [a.Cbor.Readable(errs)]` | `where [a.Cbor.Readable]` |
 | `where [a.Cbor.Parseable([InvalidCbor(U64), ..errs])]` | `where [a.Cbor.Parseable(Cbor.Error)]` |
